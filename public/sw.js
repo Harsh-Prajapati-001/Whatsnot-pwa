@@ -1,13 +1,13 @@
 /* Whatsnot service worker: caches only the application shell and non-sensitive operational reads. */
-const VERSION = "whatsnot-v1.0.0";
+const VERSION = "whatsnot-v2.0.0";
 const SHELL = `${VERSION}-shell`;
 const RUNTIME = `${VERSION}-runtime`;
-const SAFE_ROUTES = ["/dashboard", "/workspaces", "/monitoring", "/billing", "/settings"];
+const SAFE_ROUTES = ["/dashboard", "/systems", "/setup", "/automations", "/costs", "/settings"];
 const PRECACHE = [
+  "/",
   "/dashboard",
-  "/workspaces",
-  "/monitoring",
-  "/billing",
+  "/systems",
+  "/setup",
   "/offline.html",
   "/manifest.webmanifest",
   "/icons/icon-192.png",

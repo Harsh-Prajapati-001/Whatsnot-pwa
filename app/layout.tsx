@@ -7,9 +7,22 @@ const mono = JetBrains_Mono({ variable: "--font-mono", subsets: ["latin"], displ
 
 export const metadata: Metadata = {
   title: { default: "Whatsnot", template: "%s | Whatsnot" },
-  description: "Deploy and operate secure WhatsApp automation workspaces from one calm control plane.",
+  description: "Learn, set up and manage clear WhatsApp business notifications without confusing infrastructure jargon.",
   applicationName: "Whatsnot",
+  metadataBase: new URL("https://whatsnot-pwa.harshprajapati0756.workers.dev"),
   manifest: "/manifest.webmanifest",
+  openGraph: {
+    title: "Whatsnot — Business updates, delivered automatically",
+    description: "Guided WhatsApp notification systems with transparent one-time setup costs.",
+    type: "website",
+    images: [{ url: "/og.png", width: 1713, height: 911, alt: "Whatsnot business notification journey" }],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Whatsnot — Business updates, delivered automatically",
+    description: "Guided WhatsApp notification systems with transparent one-time setup costs.",
+    images: ["/og.png"],
+  },
   icons: {
     icon: [
       { url: "/icons/icon-192.png", sizes: "192x192", type: "image/png" },

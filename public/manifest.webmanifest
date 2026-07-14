@@ -1,7 +1,7 @@
 {
-  "name": "Whatsnot — WhatsApp Automation Platform",
+  "name": "Whatsnot — WhatsApp Business Notifications",
   "short_name": "Whatsnot",
-  "description": "Securely deploy and operate WhatsApp automation workspaces.",
+  "description": "Learn, set up and manage clear WhatsApp business notification systems.",
   "id": "/",
   "start_url": "/dashboard?source=pwa",
   "scope": "/",
@@ -28,13 +28,13 @@
     { "src": "/icons/monochrome-96.png", "sizes": "96x96", "type": "image/png", "purpose": "monochrome" }
   ],
   "shortcuts": [
-    { "name": "Deployments", "short_name": "Deployments", "url": "/deployments", "icons": [{ "src": "/icons/icon-96.png", "sizes": "96x96" }] },
-    { "name": "Logs", "short_name": "Logs", "url": "/logs", "icons": [{ "src": "/icons/icon-96.png", "sizes": "96x96" }] },
-    { "name": "Monitoring", "short_name": "Monitoring", "url": "/monitoring", "icons": [{ "src": "/icons/icon-96.png", "sizes": "96x96" }] },
-    { "name": "New Workspace", "short_name": "New Workspace", "url": "/workspaces/new", "icons": [{ "src": "/icons/icon-96.png", "sizes": "96x96" }] }
+    { "name": "Notification systems", "short_name": "Systems", "url": "/systems", "icons": [{ "src": "/icons/icon-96.png", "sizes": "96x96" }] },
+    { "name": "Message activity", "short_name": "Activity", "url": "/activity", "icons": [{ "src": "/icons/icon-96.png", "sizes": "96x96" }] },
+    { "name": "Setup progress", "short_name": "Progress", "url": "/dashboard", "icons": [{ "src": "/icons/icon-96.png", "sizes": "96x96" }] },
+    { "name": "Set up notification", "short_name": "New notification", "url": "/setup", "icons": [{ "src": "/icons/icon-96.png", "sizes": "96x96" }] }
   ],
   "screenshots": [
-    { "src": "/screenshots/dashboard-wide.png", "sizes": "1280x800", "type": "image/png", "form_factor": "wide", "label": "Whatsnot operations dashboard" },
-    { "src": "/screenshots/dashboard-narrow.png", "sizes": "540x1200", "type": "image/png", "form_factor": "narrow", "label": "Whatsnot mobile dashboard" }
+    { "src": "/screenshots/dashboard-wide.png", "sizes": "1280x800", "type": "image/png", "form_factor": "wide", "label": "Whatsnot notification setup progress" },
+    { "src": "/screenshots/dashboard-narrow.png", "sizes": "540x1200", "type": "image/png", "form_factor": "narrow", "label": "Whatsnot mobile notification dashboard" }
   ]
 }

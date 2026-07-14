@@ -25,7 +25,7 @@ test("server-renders the Whatsnot application on primary deep links", async () =
 
 test("manifest contains the complete install contract", async () => {
   const manifest = JSON.parse(await readFile(new URL("../public/manifest.webmanifest", import.meta.url), "utf8"));
-  assert.equal(manifest.name, "Whatsnot — WhatsApp Automation Platform");
+  assert.equal(manifest.name, "Whatsnot — WhatsApp Business Notifications");
   assert.equal(manifest.id, "/");
   assert.equal(manifest.start_url, "/dashboard?source=pwa");
   assert.equal(manifest.display, "standalone");
@@ -33,7 +33,7 @@ test("manifest contains the complete install contract", async () => {
   assert.equal(manifest.theme_color, "#4F46E5");
   assert.equal(manifest.icons.filter((icon) => icon.purpose === "any").length, 9);
   assert.equal(manifest.icons.filter((icon) => icon.purpose === "maskable").length, 2);
-  assert.deepEqual(manifest.shortcuts.map((item) => item.url), ["/deployments", "/logs", "/monitoring", "/workspaces/new"]);
+  assert.deepEqual(manifest.shortcuts.map((item) => item.url), ["/systems", "/activity", "/dashboard", "/setup"]);
   assert.equal(manifest.screenshots.length, 2);
   for (const item of [...manifest.icons, ...manifest.screenshots]) {
     const file = new URL(`../public${item.src}`, import.meta.url);

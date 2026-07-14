@@ -1,244 +1,361 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { replaySafeActions } from "./pwa-queue";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
-type Route = "dashboard" | "workspaces" | "deployments" | "monitoring" | "logs" | "billing" | "team" | "api-keys" | "integrations" | "settings";
-type IconName = "grid" | "box" | "rocket" | "pulse" | "terminal" | "card" | "users" | "key" | "plug" | "gear" | "search" | "bell" | "plus" | "chevron" | "check" | "close" | "more" | "arrow" | "download";
+type PublicRoute = "home" | "learn" | "login" | "signup" | "checkout";
+type AppRoute = "dashboard" | "systems" | "setup" | "automations" | "activity" | "costs" | "settings";
+type Route = PublicRoute | AppRoute;
+type ScenarioKey = "orders" | "appointments" | "payments" | "support";
+type Toast = { id: number; title: string; body: string };
+type SystemState = "Live" | "Setting up" | "Paused";
+type SystemItem = { id: number; name: string; scenario: string; status: SystemState; progress: number; lastEvent: string; destination: string };
 
-interface BeforeInstallPromptEvent extends Event {
-  prompt(): Promise<void>;
-  userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
-}
+const legacyRoutes: Record<string, Route> = {
+  workspaces: "systems",
+  deployments: "setup",
+  monitoring: "dashboard",
+  logs: "activity",
+  billing: "costs",
+  team: "settings",
+  "api-keys": "settings",
+  integrations: "automations",
+};
 
-type StandaloneNavigator = Navigator & { standalone?: boolean };
+const appRoutes: AppRoute[] = ["dashboard", "systems", "setup", "automations", "activity", "costs", "settings"];
 
-const nav: { route: Route; label: string; icon: IconName }[] = [
-  { route: "dashboard", label: "Overview", icon: "grid" },
-  { route: "workspaces", label: "Workspaces", icon: "box" },
-  { route: "deployments", label: "Deployments", icon: "rocket" },
-  { route: "monitoring", label: "Monitoring", icon: "pulse" },
-  { route: "logs", label: "Logs", icon: "terminal" },
-  { route: "billing", label: "Billing", icon: "card" },
-  { route: "team", label: "Team", icon: "users" },
-  { route: "api-keys", label: "API Keys", icon: "key" },
-  { route: "integrations", label: "Integrations", icon: "plug" },
-  { route: "settings", label: "Settings", icon: "gear" },
+const scenarios: Record<ScenarioKey, { label: string; icon: string; headline: string; summary: string; trigger: string; message: string; steps: string[] }> = {
+  orders: {
+    label: "Orders & delivery",
+    icon: "🛍️",
+    headline: "Turn every order update into a helpful WhatsApp message.",
+    summary: "Send confirmations, dispatch updates and delivery alerts without asking staff to copy and paste messages.",
+    trigger: "A customer places an order",
+    message: "Hi Aanya! Order #1842 is confirmed. We’ll message you again when it leaves our store.",
+    steps: ["Your store reports the order", "Whatsnot chooses the approved template", "WhatsApp sends the update", "Delivery status returns to your dashboard"],
+  },
+  appointments: {
+    label: "Appointments",
+    icon: "📅",
+    headline: "Reduce no-shows with automatic reminders.",
+    summary: "Confirm bookings, remind customers before their visit and let them request a reschedule.",
+    trigger: "A booking is created or approaching",
+    message: "Reminder: your appointment with Bright Dental is tomorrow at 10:30 AM. Reply 1 to confirm.",
+    steps: ["Your calendar shares the booking", "Whatsnot schedules the reminder", "The customer confirms on WhatsApp", "Your calendar records their answer"],
+  },
+  payments: {
+    label: "Payments",
+    icon: "💳",
+    headline: "Send polite payment updates at exactly the right time.",
+    summary: "Share receipts, due-date reminders and failed-payment recovery links using approved templates.",
+    trigger: "An invoice changes status",
+    message: "Payment received — thank you! Your receipt for ₹2,499 is ready: whatsnot.link/r/1842",
+    steps: ["Your billing tool reports a change", "Whatsnot checks consent and template rules", "The receipt or reminder is sent", "The outcome appears in your activity feed"],
+  },
+  support: {
+    label: "Customer support",
+    icon: "🎧",
+    headline: "Keep customers informed while your team solves the issue.",
+    summary: "Acknowledge new tickets, share progress and notify the customer when a case is resolved.",
+    trigger: "A support ticket changes",
+    message: "We’ve received case #602. Riya from our support team is reviewing it now.",
+    steps: ["Your help desk reports the ticket", "Whatsnot checks the customer’s preference", "An update is sent", "Replies are routed back to the right team"],
+  },
+};
+
+const setupSteps = [
+  { label: "Choose a goal", help: "Tell us what should trigger a message." },
+  { label: "Connect WhatsApp", help: "Link your Meta business and phone number." },
+  { label: "Choose hosting", help: "Select where your private automation runs." },
+  { label: "Review cost", help: "Approve resources and the one-time setup fee." },
+  { label: "Go live", help: "We test the complete message journey." },
 ];
 
-function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
-  const paths: Record<IconName, React.ReactNode> = {
-    grid: <><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></>,
-    box: <><path d="m4 7 8-4 8 4-8 4-8-4Z"/><path d="m4 7 8 4 8-4v10l-8 4-8-4V7Z"/><path d="M12 11v10"/></>,
-    rocket: <><path d="M14.5 5.5c2.5-2.5 5.7-2.4 5.7-2.4s.1 3.2-2.4 5.7l-6.1 6.1-4.3.9.9-4.3 6.2-6Z"/><circle cx="16" cy="7" r="1.5"/><path d="M7.8 12.2 4 13l-2 3 5.3.7M13.4 17.2 12.7 22l-3 2-1.2-5.5"/></>,
-    pulse: <><path d="M3 12h4l2.2-6 4.1 12 2.1-6H21"/><circle cx="12" cy="12" r="9"/></>,
-    terminal: <><rect x="3" y="4" width="18" height="16" rx="3"/><path d="m7 9 3 3-3 3M13 15h4"/></>,
-    card: <><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M3 10h18M7 15h3"/></>,
-    users: <><path d="M16 20v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 20v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/></>,
-    key: <><circle cx="8" cy="15" r="4"/><path d="m11 12 9-9M15 8l3 3M18 5l3 3"/></>,
-    plug: <><path d="M12 22v-5M9 8V2M15 8V2M6 8h12v3a6 6 0 0 1-12 0V8Z"/></>,
-    gear: <><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></>,
-    search: <><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></>,
-    bell: <><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></>,
-    plus: <path d="M12 5v14M5 12h14"/>, chevron: <path d="m9 18 6-6-6-6"/>, check: <path d="m5 12 4 4L19 6"/>, close: <path d="M6 6l12 12M18 6 6 18"/>, more: <><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></>, arrow: <path d="m9 18 6-6-6-6"/>, download: <><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></>,
-  };
-  return <svg aria-hidden="true" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>;
+const defaultSystems: SystemItem[] = [
+  { id: 1, name: "Order updates", scenario: "Orders & delivery", status: "Live", progress: 100, lastEvent: "Message delivered 2 min ago", destination: "WhatsApp +91 •••• 2841" },
+  { id: 2, name: "Appointment reminders", scenario: "Appointments", status: "Setting up", progress: 60, lastEvent: "Waiting for template approval", destination: "WhatsApp +91 •••• 9106" },
+];
+
+const navItems: { route: AppRoute; label: string; icon: string; hint: string }[] = [
+  { route: "dashboard", label: "Home", icon: "⌂", hint: "Progress and next actions" },
+  { route: "systems", label: "Notification systems", icon: "◫", hint: "Everything you have created" },
+  { route: "setup", label: "Set up a system", icon: "+", hint: "Create a new WhatsApp flow" },
+  { route: "automations", label: "Message journeys", icon: "↗", hint: "Rules and scenarios" },
+  { route: "activity", label: "Message activity", icon: "≡", hint: "What happened and when" },
+  { route: "costs", label: "Costs & resources", icon: "₹", hint: "Transparent allocation details" },
+  { route: "settings", label: "Account & help", icon: "⚙", hint: "Preferences and explanations" },
+];
+
+function pathToRoute(): Route {
+  if (typeof window === "undefined") return "home";
+  const path = window.location.pathname.split("/").filter(Boolean)[0] ?? "";
+  if (!path) return "home";
+  if (path === "tutorials") return "learn";
+  if (legacyRoutes[path]) return legacyRoutes[path];
+  const known: Route[] = ["home", "learn", "login", "signup", "checkout", ...appRoutes];
+  return known.includes(path as Route) ? path as Route : "home";
 }
 
-const activity = [
-  { icon: "rocket", tone: "indigo", title: "Deployment completed", body: "Production · v2.4.1", time: "2m ago" },
-  { icon: "pulse", tone: "green", title: "Webhook health restored", body: "checkout-events", time: "18m ago" },
-  { icon: "users", tone: "blue", title: "Maya joined the workspace", body: "Developer role", time: "1h ago" },
-  { icon: "key", tone: "amber", title: "API key rotated", body: "Production API", time: "3h ago" },
-] as const;
-
-const workspaceRows = [
-  { name: "Commerce production", tag: "Production", region: "Singapore", status: "Running", health: 99.99, messages: "1.84M", updated: "2m ago" },
-  { name: "Support automation", tag: "Production", region: "Frankfurt", status: "Running", health: 99.97, messages: "642K", updated: "14m ago" },
-  { name: "Marketing sandbox", tag: "Development", region: "Virginia", status: "Updating", health: 99.81, messages: "84K", updated: "1h ago" },
-] as const;
-
-function routeFromPath(): Route {
-  if (typeof window === "undefined") return "dashboard";
-  const part = window.location.pathname.split("/").filter(Boolean)[0];
-  return nav.some((item) => item.route === part) ? part as Route : "dashboard";
+function routePath(route: Route) {
+  return route === "home" ? "/" : route === "learn" ? "/tutorials" : `/${route}`;
 }
 
-function Status({ children, tone = "success" }: { children: React.ReactNode; tone?: "success" | "info" | "warning" | "neutral" }) {
-  return <span className={`status status-${tone}`}><span />{children}</span>;
+function Brand({ inverted = false }: { inverted?: boolean }) {
+  return <span className={`brand ${inverted ? "brand-inverted" : ""}`}><span className="brand-mark">W</span><span>Whatsnot</span></span>;
 }
 
-function Sparkline({ color = "#4f46e5", variant = 0 }: { color?: string; variant?: number }) {
-  const points = variant === 1 ? "0,42 18,38 36,40 54,26 72,30 90,16 108,18 126,6" : variant === 2 ? "0,18 18,22 36,15 54,28 72,20 90,34 108,29 126,36" : "0,38 18,32 36,35 54,20 72,25 90,12 108,16 126,5";
-  return <svg className="spark" viewBox="0 0 126 48" preserveAspectRatio="none" aria-hidden="true"><defs><linearGradient id={`fade${variant}`} x1="0" y1="0" x2="0" y2="1"><stop stopColor={color} stopOpacity=".2"/><stop offset="1" stopColor={color} stopOpacity="0"/></linearGradient></defs><polygon points={`${points} 126,48 0,48`} fill={`url(#fade${variant})`}/><polyline points={points} fill="none" stroke={color} strokeWidth="2" vectorEffect="non-scaling-stroke"/></svg>;
+function PublicHeader({ navigate }: { navigate: (route: Route) => void }) {
+  return <header className="public-header">
+    <button className="brand-button" onClick={() => navigate("home")} aria-label="Whatsnot home"><Brand /></button>
+    <nav aria-label="Public navigation">
+      <button onClick={() => navigate("learn")}>How it works</button>
+      <a href="#use-cases">Examples</a>
+      <a href="#pricing">One-time pricing</a>
+    </nav>
+    <div className="public-actions"><button className="text-link" onClick={() => navigate("login")}>Sign in</button><button className="button primary small" onClick={() => navigate("signup")}>Start guided setup <span>→</span></button></div>
+  </header>;
 }
 
-function MetricCard({ label, value, change, icon, color, variant }: { label: string; value: string; change: string; icon: IconName; color: string; variant: number }) {
-  return <article className="metric-card"><div className="metric-head"><span className="metric-icon" style={{ color, background: `${color}12` }}><Icon name={icon}/></span><span className="metric-change">↗ {change}</span></div><p>{label}</p><strong>{value}</strong><Sparkline color={color} variant={variant}/></article>;
+function FlowLine({ steps, active = steps.length }: { steps: string[]; active?: number }) {
+  return <div className="flow-line" aria-label="Process flow">
+    {steps.map((step, index) => <div className={`flow-node ${index < active ? "done" : index === active ? "current" : ""}`} key={step}>
+      <span>{index < active ? "✓" : index + 1}</span><p>{step}</p>{index < steps.length - 1 && <i />}
+    </div>)}
+  </div>;
 }
 
-function Overview({ onNavigate }: { onNavigate: (r: Route) => void }) {
-  return <>
-    <div className="page-heading"><div><div className="eyebrow">Workspace overview</div><h1>Good morning, Harsh</h1><p>Here’s what’s happening across Commerce production.</p></div><div className="heading-actions"><button className="button secondary"><Icon name="download"/> Export</button><button className="button primary" data-open-launch><Icon name="plus"/> Launch workspace</button></div></div>
-    <section className="metrics" aria-label="Workspace metrics">
-      <MetricCard label="Messages processed" value="1.84M" change="12.8%" icon="arrow" color="#4f46e5" variant={0}/>
-      <MetricCard label="Webhook success" value="99.98%" change="0.4%" icon="check" color="#16a34a" variant={1}/>
-      <MetricCard label="API latency" value="184ms" change="8.2% faster" icon="pulse" color="#0ea5e9" variant={2}/>
-      <MetricCard label="Monthly cost" value="$284.60" change="4.1%" icon="card" color="#8b5cf6" variant={0}/>
-    </section>
-    <div className="overview-grid">
-      <section className="panel chart-panel"><div className="panel-head"><div><h2>Message volume</h2><p>Processed messages over the last 7 days</p></div><div className="segmented"><button className="active">7D</button><button>30D</button><button>90D</button></div></div><div className="chart-wrap"><div className="y-labels"><span>400k</span><span>300k</span><span>200k</span><span>100k</span><span>0</span></div><div className="line-chart" role="img" aria-label="Message volume rises from 180 thousand to 340 thousand messages over seven days"><div className="grid-lines"><i/><i/><i/><i/><i/></div><svg viewBox="0 0 700 220" preserveAspectRatio="none"><defs><linearGradient id="chartFill" x1="0" y1="0" x2="0" y2="1"><stop stopColor="#4f46e5" stopOpacity=".18"/><stop offset="1" stopColor="#4f46e5" stopOpacity="0"/></linearGradient></defs><path d="M0 166 C60 155 80 120 130 130 S220 154 270 102 S350 96 405 113 S500 80 550 89 S620 38 700 47 L700 220 L0 220Z" fill="url(#chartFill)"/><path d="M0 166 C60 155 80 120 130 130 S220 154 270 102 S350 96 405 113 S500 80 550 89 S620 38 700 47" fill="none" stroke="#4f46e5" strokeWidth="3" vectorEffect="non-scaling-stroke"/><circle cx="700" cy="47" r="5" fill="#fff" stroke="#4f46e5" strokeWidth="3"/></svg><div className="x-labels"><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span></div></div></div></section>
-      <section className="panel health-panel"><div className="panel-head"><div><h2>Deployment health</h2><p>Production · Singapore</p></div><Status>Healthy</Status></div><div className="health-score"><div className="score-ring"><strong>99.99</strong><span>uptime</span></div></div><div className="health-list"><div><span><i className="dot green"/>API service</span><b>Operational</b></div><div><span><i className="dot green"/>Message workers</span><b>8 / 8 healthy</b></div><div><span><i className="dot green"/>Redis queue</span><b>12ms latency</b></div><div><span><i className="dot green"/>Webhooks</span><b>99.98% success</b></div></div><button className="text-button" onClick={() => onNavigate("monitoring")}>View monitoring <Icon name="chevron" size={15}/></button></section>
-    </div>
-    <div className="bottom-grid">
-      <section className="panel activity-panel"><div className="panel-head"><div><h2>Recent activity</h2><p>Latest changes across your workspace</p></div><button className="icon-button" aria-label="More activity options"><Icon name="more"/></button></div><div className="activity-list">{activity.map((item) => <div className="activity-row" key={item.title}><span className={`activity-icon ${item.tone}`}><Icon name={item.icon}/></span><div><strong>{item.title}</strong><p>{item.body}</p></div><time>{item.time}</time></div>)}</div><button className="text-button full">View all activity <Icon name="chevron" size={15}/></button></section>
-      <section className="panel quick-panel"><div className="panel-head"><div><h2>Quick actions</h2><p>Common workspace tasks</p></div></div><div className="quick-list"><button data-open-launch><span className="quick-icon indigo"><Icon name="rocket"/></span><span><strong>Launch a workspace</strong><small>Connect Meta and deploy in minutes</small></span><Icon name="chevron"/></button><button onClick={() => onNavigate("deployments")}><span className="quick-icon blue"><Icon name="pulse"/></span><span><strong>View deployment</strong><small>Inspect status, logs, and health</small></span><Icon name="chevron"/></button><button onClick={() => onNavigate("api-keys")}><span className="quick-icon violet"><Icon name="key"/></span><span><strong>Create an API key</strong><small>Securely connect your services</small></span><Icon name="chevron"/></button></div></section>
-    </div>
-  </>;
+function HomePage({ navigate }: { navigate: (route: Route) => void }) {
+  const [scenario, setScenario] = useState<ScenarioKey>("orders");
+  const selected = scenarios[scenario];
+  return <div className="public-page">
+    <PublicHeader navigate={navigate} />
+    <main>
+      <section className="hero">
+        <div className="hero-copy">
+          <div className="pill"><span /> WhatsApp automation without confusing infrastructure</div>
+          <h1>Your business updates.<br /><em>Delivered automatically.</em></h1>
+          <p>Whatsnot helps you build reliable WhatsApp notification systems for orders, appointments, payments and support—then runs them inside cloud resources allocated for you.</p>
+          <div className="hero-actions"><button className="button primary large" onClick={() => navigate("learn")}>See a 3-minute walkthrough <span>→</span></button><button className="button ghost large" onClick={() => document.getElementById("use-cases")?.scrollIntoView({ behavior: "smooth" })}>Explore examples</button></div>
+          <div className="trust-row"><span>✓ One-time setup fee</span><span>✓ You approve every resource</span><span>✓ No markup on messages</span></div>
+        </div>
+        <div className="hero-demo" aria-label="WhatsApp notification demonstration">
+          <div className="demo-glow" />
+          <div className="demo-browser"><div className="demo-browser-bar"><i/><i/><i/><span>Live notification journey</span></div>
+            <div className="demo-canvas">
+              <div className="mini-trigger"><span>1</span><div><small>WHEN THIS HAPPENS</small><strong>New Shopify order</strong></div><b>Connected</b></div>
+              <div className="mini-connector"><i/><span>Checked, formatted and secured by Whatsnot</span><i/></div>
+              <div className="phone-card"><div className="phone-head"><span>←</span><i>WA</i><div><strong>Northstar Store</strong><small>business account</small></div></div><div className="chat-bg"><div className="message-bubble"><strong>Order confirmed 🎉</strong><p>Hi Aanya! Order #1842 is confirmed. We’ll notify you when it ships.</p><time>10:42 ✓✓</time></div></div></div>
+              <div className="delivery-chip"><span>✓</span><div><small>DELIVERY RECEIPT</small><strong>Delivered in 1.2 seconds</strong></div></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="logo-strip"><p>Connect the tools you already use</p><div><span>Shopify</span><span>WooCommerce</span><span>Razorpay</span><span>Calendly</span><span>HubSpot</span><span>Custom API</span></div></section>
+
+      <section className="public-section use-cases" id="use-cases">
+        <div className="section-heading"><span className="kicker">START WITH A REAL BUSINESS MOMENT</span><h2>What should your customers know?</h2><p>Choose an example. We’ll show the complete journey in plain language before asking you to create an account.</p></div>
+        <div className="scenario-tabs" role="tablist">{(Object.keys(scenarios) as ScenarioKey[]).map(key => <button role="tab" aria-selected={scenario === key} className={scenario === key ? "active" : ""} key={key} onClick={() => setScenario(key)}><span>{scenarios[key].icon}</span>{scenarios[key].label}</button>)}</div>
+        <div className="scenario-showcase">
+          <div><span className="number-label">EXAMPLE JOURNEY</span><h3>{selected.headline}</h3><p>{selected.summary}</p><div className="plain-note"><span>i</span><p><strong>No technical knowledge required.</strong> We explain every connection, permission and cost before anything is activated.</p></div><button className="button dark" onClick={() => navigate("learn")}>Walk through this example <span>→</span></button></div>
+          <div className="journey-card"><div className="journey-trigger"><span>⚡</span><div><small>Trigger</small><strong>{selected.trigger}</strong></div></div><div className="vertical-path"><i/><i/><i/></div><div className="journey-message"><span>WhatsApp message</span><p>{selected.message}</p><small>Delivered ✓✓</small></div></div>
+        </div>
+      </section>
+
+      <section className="public-section guide-section">
+        <div className="section-heading"><span className="kicker">A CLEAR PATH, NOT A BLACK BOX</span><h2>From idea to working notifications in five visible steps.</h2></div>
+        <FlowLine steps={setupSteps.map(step => step.label)} active={2} />
+        <div className="explain-grid">{setupSteps.map((step, index) => <article key={step.label}><span>{String(index + 1).padStart(2, "0")}</span><h3>{step.label}</h3><p>{step.help}</p></article>)}</div>
+      </section>
+
+      <section className="public-section pricing-section" id="pricing">
+        <div className="price-copy"><span className="kicker">TRANSPARENT BY DESIGN</span><h2>Pay once to set it up.<br />Your infrastructure remains visible.</h2><p>We don’t charge per notification and we don’t hide infrastructure behind vague plans. You approve a one-time amount that combines the resources needed for setup and our implementation fee.</p><ul><li><span>✓</span>Itemised resource estimate before payment</li><li><span>✓</span>No WhatsApp message markup from Whatsnot</li><li><span>✓</span>Deactivate allocated resources from one screen</li></ul></div>
+        <div className="price-card"><span>Typical starter setup</span><div className="price-total"><strong>₹7,999</strong><small>one time</small></div><div className="price-row"><span>Estimated setup resources</span><b>₹2,150</b></div><div className="price-row"><span>Whatsnot implementation & testing</span><b>₹5,849</b></div><div className="price-row muted"><span>Message markup</span><b>₹0</b></div><p>Exact resources depend on your message volume, integrations and chosen hosting provider.</p><button className="button primary large full" onClick={() => navigate("signup")}>Build my estimate <span>→</span></button></div>
+      </section>
+
+      <section className="final-cta"><div><Brand inverted /><h2>Understand it first.<br />Activate it when you’re ready.</h2><p>Explore the guided tutorial without creating an account.</p></div><div><button className="button light large" onClick={() => navigate("learn")}>Start interactive tutorial</button><button className="button outline-light large" onClick={() => navigate("signup")}>Create an account</button></div></section>
+    </main>
+    <footer className="public-footer"><Brand /><p>Clear WhatsApp automation for growing businesses.</p><span>© 2026 Whatsnot · Privacy · Terms · Meta requirements</span></footer>
+  </div>;
 }
 
-function Workspaces() {
-  return <><div className="page-heading"><div><div className="eyebrow">Infrastructure</div><h1>Workspaces</h1><p>Manage environments, deployments, and connected resources.</p></div><button className="button primary" data-open-launch><Icon name="plus"/> Launch workspace</button></div><section className="panel table-panel"><div className="table-tools"><label className="table-search"><Icon name="search"/><input aria-label="Search workspaces" placeholder="Search workspaces"/></label><button className="button secondary">All statuses <span>⌄</span></button><span className="table-count">3 workspaces</span></div><div className="data-table" role="table"><div className="table-row table-header" role="row"><span>Workspace</span><span>Region</span><span>Status</span><span>Health</span><span>Messages</span><span>Updated</span><span/></div>{workspaceRows.map((row) => <div className="table-row" role="row" key={row.name}><span className="workspace-cell"><i>{row.name.charAt(0)}</i><span><strong>{row.name}</strong><small>{row.tag}</small></span></span><span>{row.region}</span><span><Status tone={row.status === "Updating" ? "info" : "success"}>{row.status}</Status></span><span><strong>{row.health}%</strong></span><span>{row.messages}</span><span>{row.updated}</span><button className="icon-button" aria-label={`Actions for ${row.name}`}><Icon name="more"/></button></div>)}</div></section></>;
-}
-
-const bars = [42,55,48,72,66,83,74,88,76,92,81,95,78,88,72,84,68,76,90,82,94,86,78,89];
-function Monitoring() {
-  return <><div className="page-heading"><div><div className="eyebrow">Live operations</div><h1>Monitoring</h1><p>All systems operational · Auto-refreshing every 30 seconds.</p></div><div className="heading-actions"><Status>Live</Status><button className="button secondary">Last 24 hours ⌄</button></div></div><section className="resource-grid">{[{l:"CPU usage",v:"38%",s:"2.4 vCPU available",c:"#4f46e5"},{l:"Memory",v:"2.8 GB",s:"of 8 GB allocated",c:"#0ea5e9"},{l:"Queue depth",v:"124",s:"-18% from average",c:"#16a34a"},{l:"Worker health",v:"8 / 8",s:"All workers healthy",c:"#8b5cf6"}].map((m,i)=><article className="panel resource-card" key={m.l}><p>{m.l}</p><strong>{m.v}</strong><small>{m.s}</small><div className="mini-bars">{bars.slice(i*5,i*5+10).map((h,j)=><i key={j} style={{height:`${h}%`,background:m.c}}/>)}</div></article>)}</section><section className="panel monitor-panel"><div className="panel-head"><div><h2>API response time</h2><p>P50, P95, and P99 latency across all endpoints</p></div><div className="legend"><span><i className="indigo"/>P50 84ms</span><span><i className="blue"/>P95 184ms</span><span><i className="violet"/>P99 296ms</span></div></div><div className="latency-chart"><div className="grid-lines"><i/><i/><i/><i/><i/></div>{["296ms","225ms","150ms","75ms","0"].map(x=><span key={x}>{x}</span>)}<svg viewBox="0 0 900 260" preserveAspectRatio="none"><path d="M0 130 C90 105 125 145 205 115 S350 150 430 98 S570 130 650 72 S780 102 900 60" fill="none" stroke="#8b5cf6" strokeWidth="2"/><path d="M0 180 C80 164 150 190 230 156 S380 177 465 148 S600 170 690 130 S810 150 900 125" fill="none" stroke="#0ea5e9" strokeWidth="2"/><path d="M0 220 C110 205 160 225 260 204 S400 215 500 194 S660 210 760 184 S840 194 900 176" fill="none" stroke="#4f46e5" strokeWidth="2"/></svg></div></section></>;
-}
-
-function Deployments() {
-  const stages = ["Preparing", "Building", "Launching", "Ready"];
-  return <><div className="page-heading"><div><div className="eyebrow">Commerce production</div><h1>Deployment</h1><p>Version 2.4.1 · Railway · Singapore</p></div><div className="heading-actions"><button className="button secondary">Restart</button><button className="button primary">Scale workers</button></div></div><section className="panel deploy-summary"><div><Status>Running</Status><h2>Production is healthy</h2><p>Deployed 2 minutes ago by Harsh Kumar. All health checks passed.</p></div><dl><div><dt>Build</dt><dd>#bld_84f29</dd></div><div><dt>Workers</dt><dd>8 active</dd></div><div><dt>Region</dt><dd>ap-southeast</dd></div><div><dt>Runtime</dt><dd>Node.js 22</dd></div></dl></section><section className="panel timeline-panel"><div className="panel-head"><div><h2>Deployment timeline</h2><p>Completed in 3 minutes 42 seconds</p></div></div><div className="deploy-timeline">{stages.map((stage,i)=><div className="deploy-stage" key={stage}><span><Icon name="check"/></span><div><strong>{stage}</strong><small>{["Configuration validated","Image built successfully","Services started","Health checks passed"][i]}</small></div>{i<3&&<i/>}</div>)}</div></section><section className="panel env-panel"><div className="panel-head"><div><h2>Environment variables</h2><p>Secrets are encrypted and never displayed after creation.</p></div><button className="button secondary"><Icon name="plus"/> Add variable</button></div>{["META_ACCESS_TOKEN","PHONE_NUMBER_ID","WABA_ID","WEBHOOK_VERIFY_TOKEN","REDIS_URL"].map((k,i)=><div className="env-row" key={k}><code>{k}</code><span>{i === 1 ? "•••• 8472" : "••••••••••••••••"}</span><Status tone="neutral">Encrypted</Status><button className="icon-button"><Icon name="more"/></button></div>)}</section></>;
-}
-
-function Logs({ offline }: { offline: boolean }) {
-  const lines = [
-    ["12:42:18.492","INFO","webhook","Inbound webhook verified","req_7df218"],
-    ["12:42:18.618","INFO","queue","Message job enqueued","job_29ac84"],
-    ["12:42:18.942","INFO","worker-04","Job processed in 284ms","job_29ac84"],
-    ["12:42:19.104","WARN","meta-api","Rate limit at 82% capacity","req_34ba11"],
-    ["12:42:20.256","INFO","webhook","Delivery receipt processed","req_2cc910"],
-    ["12:42:21.040","INFO","worker-02","Job processed in 192ms","job_7f481c"],
+function LearnPage({ navigate }: { navigate: (route: Route) => void }) {
+  const [scenario, setScenario] = useState<ScenarioKey>("orders");
+  const [step, setStep] = useState(0);
+  const selected = scenarios[scenario];
+  const cards = [
+    { title: "The business event", eyebrow: "1 · TRIGGER", body: selected.trigger, extra: "Whatsnot listens only for the event you approve." },
+    { title: "The safety check", eyebrow: "2 · VERIFY", body: "Consent, template and contact details are checked.", extra: "Invalid or duplicate events are safely stopped." },
+    { title: "The message", eyebrow: "3 · SEND", body: selected.message, extra: "Meta delivers the approved WhatsApp template." },
+    { title: "The result", eyebrow: "4 · CONFIRM", body: "Delivered, read or failed status returns to you.", extra: "Your team can see what happened and act quickly." },
   ];
-  if (offline) return <OfflineFallback title="Live logs are unavailable offline" body="Logs can contain sensitive, real-time data and are never stored on this device."/>;
-  return <><div className="page-heading"><div><div className="eyebrow">Live stream</div><h1>Logs explorer</h1><p>Search application, deployment, and webhook events.</p></div><button className="button secondary"><Icon name="download"/> Export CSV</button></div><section className="log-shell"><div className="log-tools"><label><Icon name="search"/><input placeholder="Search logs, request IDs, or services"/></label><button>All levels ⌄</button><button>All services ⌄</button><span><i/> Live</span></div><div className="log-window" role="log" aria-label="Live application logs">{lines.map((l,i)=><div className="log-line" key={i}><time>{l[0]}</time><b className={l[1] === "WARN" ? "warn" : "info"}>{l[1]}</b><span>{l[2]}</span><p>{l[3]}</p><code>{l[4]}</code></div>)}</div><div className="log-footer"><span>Retention: 14 days</span><span>6 events · Auto-scroll on</span></div></section></>;
+  return <div className="tutorial-page">
+    <PublicHeader navigate={navigate} />
+    <main className="tutorial-main">
+      <aside className="tutorial-sidebar"><span className="kicker">INTERACTIVE TUTORIAL</span><h1>See every moving part.</h1><p>No signup. No jargon. Choose your business goal and follow a notification from trigger to delivery.</p><label>Show me an example for<select value={scenario} onChange={event => { setScenario(event.target.value as ScenarioKey); setStep(0); }}>{(Object.keys(scenarios) as ScenarioKey[]).map(key => <option value={key} key={key}>{scenarios[key].label}</option>)}</select></label><div className="tutorial-list">{cards.map((card, index) => <button className={step === index ? "active" : step > index ? "done" : ""} onClick={() => setStep(index)} key={card.title}><span>{step > index ? "✓" : index + 1}</span><div><strong>{card.title}</strong><small>{card.eyebrow.split(" · ")[1].toLowerCase()}</small></div></button>)}</div></aside>
+      <section className="tutorial-stage"><div className="stage-progress"><span style={{ width: `${(step + 1) * 25}%` }} /></div><div className="stage-card" key={`${scenario}-${step}`}><span className="stage-eyebrow">{cards[step].eyebrow}</span><div className="stage-icon">{["⚡", "🛡", "💬", "✓"][step]}</div><h2>{cards[step].title}</h2><p className="stage-body">{cards[step].body}</p><div className="stage-explain"><span>Why it matters</span><p>{cards[step].extra}</p></div><div className="stage-actions"><button className="button ghost" disabled={step === 0} onClick={() => setStep(value => value - 1)}>← Previous</button>{step < 3 ? <button className="button primary" onClick={() => setStep(value => value + 1)}>Next: {cards[step + 1].title} →</button> : <button className="button primary" onClick={() => navigate("signup")}>Build this for my business →</button>}</div></div><div className="tutorial-caption"><span>Plain-language promise</span><p>Technical terms are shown only when needed, with an explanation beside them.</p></div></section>
+    </main>
+  </div>;
 }
 
-function Billing() {
-  return <><div className="page-heading"><div><div className="eyebrow">Plan and usage</div><h1>Billing</h1><p>Manage your subscription, usage, and invoices.</p></div><button className="button primary">Manage plan</button></div><div className="billing-grid"><section className="panel plan-card"><div><span className="plan-label">PRO PLAN</span><h2>$99 <small>/ month</small></h2><p>Renews on August 12, 2026</p></div><Status>Active</Status><hr/><div className="quota"><div><span>Messages</span><b>1.84M / 3M</b></div><progress value="61" max="100"/><div><span>API requests</span><b>6.2M / 10M</b></div><progress value="62" max="100"/><div><span>Workspaces</span><b>3 / 5</b></div><progress value="60" max="100"/></div></section><section className="panel cost-card"><div className="panel-head"><div><h2>Estimated total</h2><p>Current billing period</p></div></div><strong>$284.60</strong><div className="cost-breakdown"><div><span>Base plan</span><b>$99.00</b></div><div><span>Message overage</span><b>$128.40</b></div><div><span>Worker compute</span><b>$57.20</b></div></div></section></div><section className="panel invoices"><div className="panel-head"><div><h2>Invoice history</h2><p>Download invoices and payment receipts.</p></div></div>{[["July 2026","$264.80","Paid"],["June 2026","$248.20","Paid"],["May 2026","$231.60","Paid"]].map(x=><div className="invoice-row" key={x[0]}><span className="invoice-icon"><Icon name="card"/></span><div><strong>{x[0]}</strong><small>PDF invoice · Visa ending 4242</small></div><b>{x[1]}</b><Status>{x[2]}</Status><button className="icon-button" aria-label={`Download ${x[0]} invoice`}><Icon name="download"/></button></div>)}</section></>;
+function AuthPage({ mode, navigate, onAuth }: { mode: "login" | "signup"; navigate: (route: Route) => void; onAuth: (name: string) => void }) {
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [error, setError] = useState("");
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    if ((mode === "signup" && name.trim().length < 2) || !email.includes("@") || password.length < 8) {
+      setError("Please enter a valid email and a password with at least 8 characters.");
+      return;
+    }
+    onAuth(name.trim() || email.split("@")[0]);
+    navigate(mode === "signup" ? "checkout" : "dashboard");
+  };
+  return <div className="auth-page"><div className="auth-aside"><button className="brand-button" onClick={() => navigate("home")}><Brand inverted /></button><div><span className="kicker light">YOU’LL ALWAYS KNOW WHAT COMES NEXT</span><h1>{mode === "signup" ? "Turn your first notification idea into a tested system." : "Welcome back to your notification control centre."}</h1><FlowLine steps={["Account", "Cost approval", "WhatsApp", "Hosting", "Live test"]} active={mode === "signup" ? 0 : 5} /></div><p>We never ask for passwords to your cloud account. Connections use scoped permissions that you can revoke.</p></div><main className="auth-main"><div className="auth-card"><div className="mobile-auth-brand"><Brand /></div><span className="kicker">{mode === "signup" ? "CREATE YOUR ACCOUNT" : "SIGN IN"}</span><h2>{mode === "signup" ? "Let’s start with the basics." : "Continue your setup."}</h2><p>{mode === "signup" ? "You’ll review the complete price before anything is activated." : "Use the email connected to your Whatsnot account."}</p><form onSubmit={submit}>{mode === "signup" && <label>Your name<input value={name} onChange={event => setName(event.target.value)} autoComplete="name" placeholder="Harsh Prajapati" /></label>}<label>Work email<input type="email" value={email} onChange={event => setEmail(event.target.value)} autoComplete="email" placeholder="you@business.com" /></label><label>Password<div className="password-field"><input type={showPassword ? "text" : "password"} value={password} onChange={event => setPassword(event.target.value)} autoComplete={mode === "signup" ? "new-password" : "current-password"} placeholder="At least 8 characters" /><button type="button" onClick={() => setShowPassword(value => !value)}>{showPassword ? "Hide" : "Show"}</button></div></label>{error && <div className="form-error" role="alert">{error}</div>}<button className="button primary large full" type="submit">{mode === "signup" ? "Continue to transparent pricing" : "Sign in"} <span>→</span></button></form><div className="auth-divider"><span>or continue with</span></div><div className="social-auth"><button onClick={() => { onAuth("Google user"); navigate(mode === "signup" ? "checkout" : "dashboard"); }}>G&nbsp; Google</button><button onClick={() => { onAuth("GitHub user"); navigate(mode === "signup" ? "checkout" : "dashboard"); }}>●&nbsp; GitHub</button></div><p className="auth-switch">{mode === "signup" ? "Already have an account?" : "New to Whatsnot?"} <button onClick={() => navigate(mode === "signup" ? "login" : "signup")}>{mode === "signup" ? "Sign in" : "Create an account"}</button></p></div></main></div>;
 }
 
-function Team() {
-  const people = [["HK","Harsh Kumar","harsh@whatsnot.io","Owner"],["MS","Maya Singh","maya@whatsnot.io","Developer"],["AR","Aarav Rao","aarav@whatsnot.io","Operator"],["SL","Sara Lee","sara@whatsnot.io","Viewer"]];
-  return <><div className="page-heading"><div><div className="eyebrow">Organization</div><h1>Team</h1><p>Manage members, roles, and workspace access.</p></div><button className="button primary"><Icon name="plus"/> Invite member</button></div><section className="panel members"><div className="table-tools"><label className="table-search"><Icon name="search"/><input placeholder="Search members"/></label><span className="table-count">4 members · 1 pending</span></div>{people.map((p,i)=><div className="member-row" key={p[1]}><span className={`avatar av-${i}`}>{p[0]}</span><div><strong>{p[1]}{i===0&&<small className="you">You</small>}</strong><p>{p[2]}</p></div><select aria-label={`Role for ${p[1]}`} defaultValue={p[3]} disabled={i===0}><option>Owner</option><option>Admin</option><option>Developer</option><option>Operator</option><option>Viewer</option></select><Status>{i===0?"MFA enabled":"Active"}</Status><button className="icon-button"><Icon name="more"/></button></div>)}</section></>;
+function CheckoutPage({ navigate, onComplete }: { navigate: (route: Route) => void; onComplete: () => void }) {
+  const [volume, setVolume] = useState("starter");
+  const [provider, setProvider] = useState("cloudflare");
+  const [accepted, setAccepted] = useState(false);
+  const costs = volume === "starter" ? [2150, 5849] : volume === "growing" ? [3950, 7049] : [6900, 9099];
+  const total = costs[0] + costs[1];
+  return <div className="checkout-page"><header><button className="brand-button" onClick={() => navigate("home")}><Brand /></button><span><b>Secure review</b><small>Nothing is deployed until you approve</small></span></header><main><section className="checkout-form"><span className="kicker">STEP 2 OF 5 · COST APPROVAL</span><h1>Choose a sensible starting size.</h1><p>These choices create an estimate, not a recurring Whatsnot subscription. You can scale or deactivate resources later.</p><div className="choice-section"><h2>Expected monthly notifications</h2><div className="choice-grid">{[{id:"starter",title:"Up to 10,000",body:"Small shop or clinic"},{id:"growing",title:"10,000–100,000",body:"Growing online business"},{id:"scale",title:"100,000+",body:"High-volume operations"}].map(option => <button className={volume === option.id ? "selected" : ""} onClick={() => setVolume(option.id)} key={option.id}><span>{volume === option.id ? "✓" : ""}</span><strong>{option.title}</strong><small>{option.body}</small></button>)}</div></div><div className="choice-section"><h2>Preferred resource provider</h2><div className="provider-grid">{[{id:"cloudflare",logo:"CF",title:"Cloudflare",body:"Simple, global and beginner-friendly"},{id:"railway",logo:"RW",title:"Railway",body:"Managed application hosting"}].map(option => <button className={provider === option.id ? "selected" : ""} onClick={() => setProvider(option.id)} key={option.id}><i>{option.logo}</i><span><strong>{option.title}</strong><small>{option.body}</small></span><b>{provider === option.id ? "✓" : ""}</b></button>)}</div></div><div className="info-banner"><span>i</span><p><strong>What “resources” means:</strong> the secure computing, storage and traffic allowance used to receive events and send notifications. You will see each item before activation.</p></div></section><aside className="order-summary"><span className="kicker">YOUR ONE-TIME ESTIMATE</span><h2>Starter activation</h2><div className="summary-row"><span>Allocated setup resources<small>{provider === "cloudflare" ? "Cloudflare Worker, storage and event capacity" : "Railway service, database and event capacity"}</small></span><b>₹{costs[0].toLocaleString("en-IN")}</b></div><div className="summary-row"><span>Implementation & testing<small>Connection guidance, templates and live verification</small></span><b>₹{costs[1].toLocaleString("en-IN")}</b></div><div className="summary-row free"><span>WhatsApp message markup</span><b>₹0</b></div><div className="summary-total"><span>Total one-time amount<small>Taxes shown before real payment</small></span><strong>₹{total.toLocaleString("en-IN")}</strong></div><label className="consent"><input type="checkbox" checked={accepted} onChange={event => setAccepted(event.target.checked)} /><span>I understand this demonstration does not process a real payment. A payment provider must be connected securely before launch.</span></label><button disabled={!accepted} className="button primary large full" onClick={() => { onComplete(); navigate("dashboard"); }}>Approve demo estimate <span>→</span></button><button className="text-button centered" onClick={() => navigate("learn")}>Review the tutorial again</button><p className="secure-note">🔒 No card details are collected in this frontend prototype.</p></aside></main></div>;
 }
 
-function ApiKeys({ offline }: { offline: boolean }) {
-  return <><div className="page-heading"><div><div className="eyebrow">Developer access</div><h1>API keys</h1><p>Keys are revealed once and stored as secure hashes.</p></div><button className="button primary" disabled={offline} title={offline ? "Unavailable offline" : ""}><Icon name="plus"/> Create API key</button></div><div className="security-note"><span><Icon name="key"/></span><div><strong>Keep your API keys secure</strong><p>Never expose keys in client-side code. Rotate any key you suspect has been compromised.</p></div></div><section className="panel key-list">{[["Production API","wn_live_••••9K2F","All scopes","2 minutes ago"],["Analytics read-only","wn_live_••••4M8Q","metrics:read","3 days ago"],["CI deployment","wn_live_••••7A1P","deployments:write","12 days ago"]].map((k,i)=><div className="key-row" key={k[0]}><span className="key-icon"><Icon name="key"/></span><div><strong>{k[0]}</strong><code>{k[1]}</code></div><div><small>SCOPES</small><span>{k[2]}</span></div><div><small>LAST USED</small><span>{k[3]}</span></div><Status tone={i===2?"warning":"success"}>{i===2?"Expires in 8d":"Active"}</Status><button className="icon-button"><Icon name="more"/></button></div>)}</section></>;
+function AppShell({ route, navigate, userName, children, unread, openNotifications, openCommand, mobileOpen, setMobileOpen }: { route: AppRoute; navigate: (route: Route) => void; userName: string; children: React.ReactNode; unread: number; openNotifications: () => void; openCommand: () => void; mobileOpen: boolean; setMobileOpen: (value: boolean) => void }) {
+  const current = navItems.find(item => item.route === route)!;
+  return <div className="app-shell"><a className="skip-link" href="#app-content">Skip to content</a><aside className={`app-sidebar ${mobileOpen ? "open" : ""}`}><div className="sidebar-brand"><Brand inverted /><button onClick={() => setMobileOpen(false)} aria-label="Close navigation">×</button></div><div className="org-card"><span>HP</span><div><strong>Harsh’s business</strong><small>Starter setup</small></div><b>⌄</b></div><nav aria-label="Application navigation">{navItems.map(item => <button title={item.hint} className={route === item.route ? "active" : ""} onClick={() => { navigate(item.route); setMobileOpen(false); }} key={item.route}><span>{item.icon}</span><div><strong>{item.label}</strong><small>{item.hint}</small></div>{item.route === "setup" && <i>NEW</i>}</button>)}</nav><div className="sidebar-help"><span>?</span><div><strong>Words feel confusing?</strong><p>Open the plain-language guide.</p></div><button onClick={() => navigate("settings")}>View guide</button></div><div className="sidebar-user"><span>{userName.slice(0, 2).toUpperCase()}</span><div><strong>{userName}</strong><small>Account owner</small></div><button aria-label="User options">•••</button></div></aside>{mobileOpen && <button className="sidebar-scrim" aria-label="Close navigation" onClick={() => setMobileOpen(false)} />}<div className="app-area"><header className="app-topbar"><div><button className="mobile-menu" onClick={() => setMobileOpen(true)} aria-label="Open navigation">☰</button><span className="top-icon">{current.icon}</span><div><strong>{current.label}</strong><small>{current.hint}</small></div></div><div><button className="search-button" onClick={openCommand}><span>⌕</span> Find anything <kbd>Ctrl K</kbd></button><button className="top-button" onClick={openNotifications} aria-label={`${unread} unread notifications`}>♢{unread > 0 && <i>{unread}</i>}</button><button className="button primary small top-setup" onClick={() => navigate("setup")}>+ Set up notification</button></div></header><main id="app-content" className="app-content">{children}</main></div></div>;
 }
 
-function Integrations() {
-  const integrations = [["M","Meta WhatsApp","Connected","WhatsApp Cloud API and embedded signup","indigo"],["R","Railway","Connected","Secure BYOC deployment infrastructure","violet"],["S","Slack","Available","Send operational alerts to your team","blue"],["Z","Zapier","Available","Connect Whatsnot to 6,000+ apps","amber"]];
-  return <><div className="page-heading"><div><div className="eyebrow">Marketplace</div><h1>Integrations</h1><p>Connect the tools your team uses every day.</p></div></div><div className="integration-grid">{integrations.map((x,i)=><article className="panel integration-card" key={x[1]}><span className={`integration-logo ${x[4]}`}>{x[0]}</span><Status tone={i<2?"success":"neutral"}>{x[2]}</Status><h2>{x[1]}</h2><p>{x[3]}</p><button className={`button ${i<2?"secondary":"primary"}`}>{i<2?"Manage":"Connect"}</button></article>)}</div></>;
+function ProgressBoard({ navigate }: { navigate: (route: Route) => void }) {
+  const steps = [{ title: "Goal chosen", detail: "Order updates", state: "done" }, { title: "WhatsApp connected", detail: "Demo number linked", state: "done" }, { title: "Template approval", detail: "Waiting for Meta", state: "current" }, { title: "Resources activated", detail: "Starts after approval", state: "next" }, { title: "Live message test", detail: "Final verification", state: "next" }];
+  return <section className="panel progress-board"><div className="panel-heading"><div><span className="kicker">YOUR SETUP JOURNEY</span><h2>You’re 2 steps away from your first live notification.</h2><p>We’re waiting for Meta to approve your order-confirmation message. This normally takes a few minutes to 24 hours.</p></div><div className="progress-ring"><strong>60%</strong><span>complete</span></div></div><div className="status-flow">{steps.map((item, index) => <button className={item.state} onClick={() => navigate(index < 2 ? "systems" : "setup")} key={item.title}><span>{item.state === "done" ? "✓" : index + 1}</span><div><strong>{item.title}</strong><small>{item.detail}</small></div>{index < steps.length - 1 && <i />}</button>)}</div><div className="next-action"><span>▶</span><div><strong>Next action: review the approved template</strong><p>We’ll notify you as soon as Meta responds. You can continue exploring meanwhile.</p></div><button className="button primary" onClick={() => navigate("setup")}>Continue setup →</button></div></section>;
 }
 
-function Settings({ onInstall, onPush, installed, pushState }: { onInstall: () => void; onPush: () => void; installed: boolean; pushState: string }) {
-  return <><div className="page-heading"><div><div className="eyebrow">Preferences</div><h1>Settings</h1><p>Manage workspace defaults, security, and notifications.</p></div></div><div className="settings-layout"><aside className="settings-nav"><button className="active">General</button><button>Security</button><button>Notifications</button><button>Appearance</button><button>Data and privacy</button><button className="danger-link">Danger zone</button></aside><section className="panel settings-panel"><div className="setting-section"><h2>Application</h2><p>Install Whatsnot for faster access and offline-ready dashboards.</p><div className="setting-row"><div><strong>Install Whatsnot</strong><span>Use Whatsnot in a focused standalone window.</span></div><button className="button secondary" onClick={onInstall} disabled={installed}>{installed ? "Installed" : "Install app"}</button></div><div className="setting-row"><div><strong>Push notifications</strong><span>Receive critical deployment, webhook, and security alerts.</span></div><button className="button secondary" onClick={onPush}>{pushState === "granted" ? "Enabled" : "Enable push"}</button></div></div><div className="setting-section"><h2>Workspace defaults</h2><div className="field-grid"><label>Default region<select defaultValue="Singapore"><option>Singapore</option><option>Frankfurt</option><option>Virginia</option></select></label><label>Timezone<select defaultValue="Asia/Kolkata"><option>Asia/Kolkata</option><option>UTC</option><option>America/New_York</option></select></label></div><label className="switch-row"><span><strong>Weekly operations digest</strong><small>Receive a weekly summary every Monday.</small></span><input type="checkbox" defaultChecked/><i/></label><label className="switch-row"><span><strong>Deployment completion alerts</strong><small>Notify me when deployments finish.</small></span><input type="checkbox" defaultChecked/><i/></label></div><div className="settings-actions"><span>Changes save automatically</span><Status>Saved</Status></div></section></div></>;
+function DashboardPage({ navigate }: { navigate: (route: Route) => void }) {
+  return <><div className="app-page-heading"><div><span className="kicker">MONDAY, 13 JULY</span><h1>Good evening, Harsh 👋</h1><p>Here’s the clearest next step for getting your business notifications live.</p></div><button className="button primary" onClick={() => navigate("setup")}>+ Set up another notification</button></div><ProgressBoard navigate={navigate} /><section className="dashboard-grid"><div className="panel simple-metrics"><div><span className="metric-symbol green">✓</span><p>Messages delivered</p><strong>1,248</strong><small>98.7% successful this month</small></div><div><span className="metric-symbol blue">↗</span><p>Active notification journeys</p><strong>1</strong><small>1 more being prepared</small></div><div><span className="metric-symbol orange">!</span><p>Needs your attention</p><strong>1</strong><small>Template approval pending</small></div></div><div className="panel understand-card"><span>PLAIN-LANGUAGE GUIDE</span><h2>What is a “notification system”?</h2><p>It is one complete connection that notices a business event—like a new order—and safely sends the right WhatsApp message.</p><button onClick={() => navigate("learn")}>See the 3-minute explanation →</button></div></section><section className="dashboard-grid lower"><div className="panel recent-panel"><div className="panel-title"><div><h2>Latest message activity</h2><p>A readable history of what your systems did.</p></div><button onClick={() => navigate("activity")}>View all</button></div>{[{icon:"✓",title:"Order confirmation delivered",meta:"Customer ending 4482 · 2 min ago",tone:"green"},{icon:"✓",title:"Dispatch update delivered",meta:"Customer ending 9014 · 18 min ago",tone:"green"},{icon:"↻",title:"Appointment reminder queued",meta:"Scheduled for tomorrow · 1 hr ago",tone:"blue"},{icon:"!",title:"Payment reminder needs review",meta:"Missing customer consent · 3 hr ago",tone:"orange"}].map(item => <div className="activity-item" key={item.title}><span className={item.tone}>{item.icon}</span><div><strong>{item.title}</strong><small>{item.meta}</small></div><button aria-label={`Open ${item.title}`}>›</button></div>)}</div><div className="panel quick-start"><div className="panel-title"><div><h2>Choose another business goal</h2><p>Start from a tested example.</p></div></div>{(Object.keys(scenarios) as ScenarioKey[]).map(key => <button onClick={() => navigate("setup")} key={key}><span>{scenarios[key].icon}</span><div><strong>{scenarios[key].label}</strong><small>{scenarios[key].summary}</small></div><b>›</b></button>)}</div></section></>;
 }
 
-function OfflineFallback({ title, body }: { title: string; body: string }) {
-  return <div className="offline-fallback"><span><Icon name="pulse" size={28}/></span><h1>{title}</h1><p>{body}</p><button className="button primary" onClick={() => window.location.reload()}>Try again</button></div>;
+function SystemsPage({ systems, setSystems, navigate, toast }: { systems: SystemItem[]; setSystems: (systems: SystemItem[]) => void; navigate: (route: Route) => void; toast: (title: string, body: string) => void }) {
+  const [filter, setFilter] = useState<"All" | SystemState>("All");
+  const [query, setQuery] = useState("");
+  const [menu, setMenu] = useState<number | null>(null);
+  const [remove, setRemove] = useState<SystemItem | null>(null);
+  const visible = systems.filter(item => (filter === "All" || item.status === filter) && item.name.toLowerCase().includes(query.toLowerCase()));
+  const pause = (item: SystemItem) => { const next: SystemState = item.status === "Paused" ? "Live" : "Paused"; setSystems(systems.map(system => system.id === item.id ? { ...system, status: next } : system)); setMenu(null); toast(next === "Paused" ? "Notification system paused" : "Notification system resumed", `${item.name} is now ${next.toLowerCase()}.`); };
+  return <><div className="app-page-heading"><div><span className="kicker">YOUR BUSINESS NOTIFICATIONS</span><h1>Notification systems</h1><p>Each card is a complete event-to-message connection. Pause or remove it whenever you choose.</p></div><button className="button primary" onClick={() => navigate("setup")}>+ Set up a system</button></div><div className="plain-definition"><span>i</span><p><strong>In plain words:</strong> a notification system listens for one business event and sends one or more approved WhatsApp messages.</p></div><div className="system-tools"><label><span>⌕</span><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Find a notification system" /></label><div>{(["All", "Live", "Setting up", "Paused"] as const).map(value => <button className={filter === value ? "active" : ""} onClick={() => setFilter(value)} key={value}>{value}</button>)}</div></div><section className="system-grid">{visible.map(item => <article className="system-card" key={item.id}><div className="system-card-head"><span className="system-logo">{item.scenario.includes("Order") ? "🛍️" : "📅"}</span><div><span className={`system-status ${item.status.toLowerCase().replace(" ", "-")}`}><i />{item.status}</span><h2>{item.name}</h2><p>{item.scenario}</p></div><div className="menu-wrap"><button className="more-button" onClick={() => setMenu(menu === item.id ? null : item.id)} aria-label={`Actions for ${item.name}`}>•••</button>{menu === item.id && <div className="action-menu"><button onClick={() => navigate("setup")}>View setup progress</button><button onClick={() => pause(item)}>{item.status === "Paused" ? "Resume messages" : "Pause messages"}</button><button className="danger" onClick={() => { setRemove(item); setMenu(null); }}>Deactivate resources</button></div>}</div></div><div className="system-path"><div><span>WHEN</span><strong>{item.scenario === "Appointments" ? "Booking approaches" : "Order status changes"}</strong></div><i>→</i><div><span>THEN</span><strong>Send WhatsApp update</strong></div></div>{item.status === "Setting up" ? <div className="setup-progress"><div><span>Setup progress</span><b>{item.progress}%</b></div><progress value={item.progress} max="100" /><small>{item.lastEvent}</small></div> : <div className="system-stats"><div><span>Today</span><strong>{item.status === "Paused" ? "0" : "184 messages"}</strong></div><div><span>Success</span><strong>{item.status === "Paused" ? "—" : "99.2%"}</strong></div></div>}<div className="system-footer"><span>{item.destination}</span><button onClick={() => navigate(item.status === "Setting up" ? "setup" : "activity")}>{item.status === "Setting up" ? "Continue setup" : "View activity"} →</button></div></article>)}<button className="new-system-card" onClick={() => navigate("setup")}><span>+</span><strong>Create another notification system</strong><p>Choose a goal and follow the guided steps.</p></button></section>{visible.length === 0 && <div className="empty-state"><span>⌕</span><h2>No matching systems</h2><p>Try another search or status filter.</p><button className="button ghost" onClick={() => { setQuery(""); setFilter("All"); }}>Clear filters</button></div>}{remove && <div className="modal-backdrop"><div className="confirm-modal"><span className="danger-icon">!</span><h2>Deactivate “{remove.name}”?</h2><p>New messages will stop and its allocated runtime will be released. Historical activity remains available.</p><div className="resource-release"><strong>Resources to release</strong><span>1 notification worker</span><span>1 event queue</span><span>1 secure configuration</span></div><div><button className="button ghost" onClick={() => setRemove(null)}>Keep system</button><button className="button danger-button" onClick={() => { setSystems(systems.filter(item => item.id !== remove.id)); toast("Resources deactivated", `${remove.name} has been removed and its allocated runtime released.`); setRemove(null); }}>Deactivate resources</button></div></div></div>}</>;
 }
 
-function GenericRoute({ route }: { route: Route }) {
-  return <OfflineFallback title={`${nav.find(n=>n.route===route)?.label} is ready`} body="This module is connected to the shared Whatsnot application shell."/>;
+function SetupPage({ systems, setSystems, navigate, toast }: { systems: SystemItem[]; setSystems: (systems: SystemItem[]) => void; navigate: (route: Route) => void; toast: (title: string, body: string) => void }) {
+  const [step, setStep] = useState(0);
+  const [scenario, setScenario] = useState<ScenarioKey>("orders");
+  const [connected, setConnected] = useState(false);
+  const [provider, setProvider] = useState("Cloudflare");
+  const [name, setName] = useState("Order updates");
+  const selected = scenarios[scenario];
+  const next = () => setStep(value => Math.min(4, value + 1));
+  const launch = () => { const newSystem: SystemItem = { id: Date.now(), name, scenario: selected.label, status: "Setting up", progress: 40, lastEvent: "Preparing approved message template", destination: "WhatsApp demo connection" }; setSystems([...systems, newSystem]); toast("Setup started", `${name} was added to your notification systems.`); navigate("systems"); };
+  return <><div className="app-page-heading setup-heading"><div><span className="kicker">GUIDED SETUP</span><h1>Set up a WhatsApp notification system</h1><p>We explain each choice and show your progress. Nothing goes live without your approval.</p></div><button className="button ghost" onClick={() => navigate("systems")}>Save & exit</button></div><section className="setup-layout"><aside className="setup-nav"><div className="setup-percent"><div><strong>{step * 20}%</strong><span>complete</span></div><progress value={step} max="5" /></div>{setupSteps.map((item, index) => <button className={step === index ? "active" : step > index ? "done" : ""} onClick={() => index <= step && setStep(index)} key={item.label}><span>{step > index ? "✓" : index + 1}</span><div><strong>{item.label}</strong><small>{item.help}</small></div></button>)}<div className="setup-help"><span>?</span><p><strong>Need a person?</strong><br />Book guided assistance before activation.</p><button onClick={() => toast("Help request noted", "A support scheduling flow will be connected here.")}>Request help</button></div></aside><div className="setup-panel">{step === 0 && <div className="setup-step"><span className="step-label">STEP 1 OF 5</span><h2>What should trigger a WhatsApp message?</h2><p>Choose the closest business goal. You can adjust the exact wording later.</p><div className="goal-grid">{(Object.keys(scenarios) as ScenarioKey[]).map(key => <button className={scenario === key ? "selected" : ""} onClick={() => { setScenario(key); setName(`${scenarios[key].label} updates`); }} key={key}><span>{scenarios[key].icon}</span><div><strong>{scenarios[key].label}</strong><small>{scenarios[key].summary}</small></div><b>{scenario === key ? "✓" : ""}</b></button>)}</div><div className="selection-preview"><span>YOUR CHOSEN JOURNEY</span><FlowLine steps={selected.steps} /></div></div>}{step === 1 && <div className="setup-step"><span className="step-label">STEP 2 OF 5</span><h2>Connect your WhatsApp Business account.</h2><p>Meta provides the secure connection. Whatsnot never asks for your Facebook password.</p><div className={`connection-card ${connected ? "connected" : ""}`}><div className="meta-logo">∞</div><div><h3>{connected ? "Demo business connected" : "Meta Embedded Signup"}</h3><p>{connected ? "Phone number ending 2841 · Permission can be revoked" : "Choose your business account and WhatsApp phone number in Meta’s secure window."}</p></div><button className={`button ${connected ? "ghost" : "primary"}`} onClick={() => setConnected(value => !value)}>{connected ? "Disconnect demo" : "Connect demo account"}</button></div><div className="permission-list"><h3>What you will approve</h3><div><span>✓</span><p><strong>Send approved templates</strong><small>Only from the number you select.</small></p></div><div><span>✓</span><p><strong>Receive delivery updates</strong><small>So you can see delivered or failed messages.</small></p></div><div><span>✓</span><p><strong>Manage the connection</strong><small>You can disconnect from Whatsnot or Meta.</small></p></div></div><div className="warning-note">Real Meta Embedded Signup requires backend credentials. This button demonstrates the frontend state only.</div></div>}{step === 2 && <div className="setup-step"><span className="step-label">STEP 3 OF 5</span><h2>Where should the notification system run?</h2><p>We recommend the simplest option for your expected volume. “Hosting” means the computers and storage that keep the automation available.</p><div className="hosting-options">{[{name:"Cloudflare",badge:"Recommended",desc:"Fast global events with a generous starter allowance",cost:"Estimated ₹650 setup resources"},{name:"Railway",badge:"Managed",desc:"Simple application and database hosting in one place",cost:"Estimated ₹1,350 setup resources"},{name:"My own cloud",badge:"Advanced",desc:"Connect infrastructure already owned by your business",cost:"Calculated after connection"}].map(option => <button className={provider === option.name ? "selected" : ""} onClick={() => setProvider(option.name)} key={option.name}><span>{option.name.slice(0, 2).toUpperCase()}</span><div><b>{option.badge}</b><h3>{option.name}</h3><p>{option.desc}</p><small>{option.cost}</small></div><i>{provider === option.name ? "✓" : ""}</i></button>)}</div><div className="allocation-map"><h3>Resources this setup allocates</h3><div><span>⚡</span><p><strong>Event receiver</strong><small>Notices the business event</small></p><b>1</b></div><div><span>⇄</span><p><strong>Message queue</strong><small>Keeps bursts reliable</small></p><b>1</b></div><div><span>▣</span><p><strong>Secure settings store</strong><small>Protects connection references</small></p><b>1</b></div></div></div>}{step === 3 && <div className="setup-step"><span className="step-label">STEP 4 OF 5</span><h2>Review the name, journey and cost.</h2><p>This is your final review before a demo setup begins.</p><label className="setup-name">Notification system name<input value={name} onChange={event => setName(event.target.value)} /></label><div className="review-card"><div><span>Business goal</span><strong>{selected.label}</strong></div><div><span>WhatsApp connection</span><strong>{connected ? "Demo number ending 2841" : "Not connected yet"}</strong></div><div><span>Resource provider</span><strong>{provider}</strong></div><div><span>Expected setup time</span><strong>10–20 minutes after approvals</strong></div></div><div className="cost-review"><div><span>One-time resources and implementation</span><strong>{provider === "Cloudflare" ? "₹7,999" : provider === "Railway" ? "₹8,699" : "Calculated after connection"}</strong></div><p>Whatsnot message markup: <b>₹0</b>. Meta and provider usage, if any, remains visible separately.</p></div></div>}{step === 4 && <div className="setup-step go-live-step"><span className="step-label">STEP 5 OF 5</span><div className="launch-visual"><span>✓</span></div><h2>Ready to prepare “{name}”.</h2><p>The demo will add this system to your dashboard and show the remaining approval stages. It will not allocate real resources or send messages.</p><div className="launch-flow"><FlowLine steps={["Validate choices", "Prepare template", "Allocate resources", "Send test", "Confirm delivery"]} active={1} /></div><div className="launch-summary"><span>✓ You stay in control</span><span>✓ Every stage is visible</span><span>✓ Deactivate from one menu</span></div><button className="button primary large" onClick={launch}>Start demo setup →</button></div>}<div className="setup-footer"><button className="button ghost" disabled={step === 0} onClick={() => setStep(value => value - 1)}>← Back</button>{step < 4 && <button className="button primary" disabled={step === 1 && !connected} onClick={next}>Continue to {setupSteps[step + 1].label.toLowerCase()} →</button>}</div></div></section></>;
+}
+
+function AutomationsPage({ toast }: { toast: (title: string, body: string) => void }) {
+  const [enabled, setEnabled] = useState<Record<string, boolean>>({ "Order confirmed": true, "Out for delivery": true, "Delivered": true, "Review request": false });
+  const [builder, setBuilder] = useState(false);
+  return <><div className="app-page-heading"><div><span className="kicker">MESSAGE JOURNEYS</span><h1>What gets sent, and when</h1><p>Each rule connects a business moment to an approved WhatsApp message.</p></div><button className="button primary" onClick={() => setBuilder(true)}>+ Add a message step</button></div><div className="journey-overview panel"><div className="journey-start"><span>🛍️</span><div><small>STARTS WHEN</small><strong>An order is created</strong></div></div><div className="journey-arrow">→</div><div className="journey-branch"><span>4 message rules</span><strong>Order update journey</strong><small>Stops when the order is delivered or cancelled</small></div><div className="journey-arrow">→</div><div className="journey-result"><span>✓</span><div><small>THIS MONTH</small><strong>1,248 delivered</strong></div></div></div><section className="rules-list">{[{name:"Order confirmed",when:"Immediately after payment",template:"Your order {{order_number}} is confirmed",state:"Approved"},{name:"Out for delivery",when:"When courier status changes",template:"Your order is out for delivery",state:"Approved"},{name:"Delivered",when:"When delivery is confirmed",template:"Your order has been delivered",state:"Approved"},{name:"Review request",when:"2 days after delivery",template:"How was your experience?",state:"Draft"}].map((rule, index) => <article className="rule-card panel" key={rule.name}><div className="rule-number">{index + 1}</div><div className="rule-content"><div><span className={`approval ${rule.state.toLowerCase()}`}>{rule.state}</span><h2>{rule.name}</h2><p><b>When:</b> {rule.when}</p></div><div className="template-preview"><small>MESSAGE PREVIEW</small><p>{rule.template}</p></div></div><label className="toggle"><input type="checkbox" checked={enabled[rule.name]} onChange={event => { setEnabled({ ...enabled, [rule.name]: event.target.checked }); toast(event.target.checked ? "Message step enabled" : "Message step paused", `${rule.name} is now ${event.target.checked ? "active" : "paused"}.`); }} /><span /></label><button className="more-button">•••</button></article>)}</section>{builder && <div className="modal-backdrop"><div className="builder-modal"><button className="modal-close" onClick={() => setBuilder(false)}>×</button><span className="kicker">NEW MESSAGE STEP</span><h2>Choose what should happen next.</h2><label>When this happens<select><option>Order status changes</option><option>A specific time passes</option><option>Customer replies</option></select></label><label>Send this approved message<select><option>Order update template</option><option>Delivery confirmation</option><option>Support follow-up</option></select></label><div className="builder-path"><span>Event</span><i>→</i><span>Safety check</span><i>→</i><span>WhatsApp</span></div><div><button className="button ghost" onClick={() => setBuilder(false)}>Cancel</button><button className="button primary" onClick={() => { setBuilder(false); toast("Message step added", "The new draft step has been added to this journey."); }}>Add draft step</button></div></div></div>}</>;
+}
+
+function ActivityPage({ toast }: { toast: (title: string, body: string) => void }) {
+  const rows = useMemo(() => [{time:"18:42",customer:"Customer •••• 4482",event:"Order confirmation",status:"Delivered",system:"Order updates"},{time:"18:26",customer:"Customer •••• 9014",event:"Dispatch update",status:"Read",system:"Order updates"},{time:"17:58",customer:"Customer •••• 6302",event:"Appointment reminder",status:"Queued",system:"Appointment reminders"},{time:"16:31",customer:"Customer •••• 1108",event:"Payment reminder",status:"Needs review",system:"Payment recovery"},{time:"15:44",customer:"Customer •••• 7391",event:"Delivery confirmation",status:"Delivered",system:"Order updates"}], []);
+  const [query, setQuery] = useState("");
+  const [status, setStatus] = useState("All");
+  const visible = rows.filter(row => (status === "All" || row.status === status) && Object.values(row).join(" ").toLowerCase().includes(query.toLowerCase()));
+  const exportRows = () => { const csv = ["Time,Customer,Event,Status,System", ...visible.map(row => Object.values(row).map(value => `"${value}"`).join(","))].join("\n"); const blob = new Blob([csv], { type: "text/csv" }); const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = "whatsnot-message-activity.csv"; link.click(); URL.revokeObjectURL(url); toast("Activity exported", `${visible.length} rows were saved as CSV.`); };
+  return <><div className="app-page-heading"><div><span className="kicker">READABLE AUDIT TRAIL</span><h1>Message activity</h1><p>See what happened without reading technical logs.</p></div><button className="button ghost" onClick={exportRows}>↓ Export CSV</button></div><section className="panel activity-table"><div className="activity-tools"><label><span>⌕</span><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search customer or message" /></label><select value={status} onChange={event => setStatus(event.target.value)}><option>All</option><option>Delivered</option><option>Read</option><option>Queued</option><option>Needs review</option></select><span>{visible.length} events</span></div><div className="table-head"><span>Time</span><span>Customer</span><span>What happened</span><span>System</span><span>Result</span><span /></div>{visible.map(row => <div className="activity-row-table" key={`${row.time}-${row.customer}`}><time>{row.time}</time><strong>{row.customer}</strong><span>{row.event}</span><span>{row.system}</span><span className={`result ${row.status.toLowerCase().replace(" ", "-")}`}><i />{row.status}</span><button aria-label="Open event details">›</button></div>)}</section></>;
+}
+
+function CostsPage({ toast }: { toast: (title: string, body: string) => void }) {
+  const [volume, setVolume] = useState(25);
+  const infra = 450 + volume * 18;
+  return <><div className="app-page-heading"><div><span className="kicker">NO SURPRISES</span><h1>Costs & allocated resources</h1><p>See what was paid once, what your provider may charge, and what can be deactivated.</p></div><button className="button ghost" onClick={() => toast("Estimate downloaded", "A cost-estimate download will be generated here.")}>↓ Download estimate</button></div><section className="cost-grid"><div className="panel paid-card"><span className="paid-badge">✓ ONE-TIME SETUP APPROVED</span><h2>₹7,999</h2><p>Approved 12 July 2026 · Reference WN-1048</p><div><span>Allocated setup resources</span><b>₹2,150</b></div><div><span>Whatsnot implementation & testing</span><b>₹5,849</b></div><div><span>Whatsnot message markup</span><b>₹0</b></div><button onClick={() => toast("Receipt prepared", "The receipt download will be connected to the payment backend.")}>Download receipt →</button></div><div className="panel allocation-card"><div className="panel-title"><div><h2>Currently allocated</h2><p>Resources supporting your active systems.</p></div><span className="live-dot">● Active</span></div>{[{name:"Event receiver",purpose:"Notices order and appointment events",count:"1 active"},{name:"Reliable message queue",purpose:"Prevents events being lost during a rush",count:"1 active"},{name:"Secure settings store",purpose:"Keeps connection references protected",count:"1 active"}].map(item => <div className="allocation-row" key={item.name}><span>◈</span><div><strong>{item.name}</strong><small>{item.purpose}</small></div><b>{item.count}</b></div>)}</div></section><section className="panel calculator"><div><span className="kicker">PLANNING TOOL</span><h2>Estimate a larger message volume</h2><p>This educational estimate helps you understand provider costs. It is not an invoice.</p><label>Expected messages per month <strong>{volume},000</strong><input type="range" min="1" max="200" value={volume} onChange={event => setVolume(Number(event.target.value))} /></label><div className="range-labels"><span>1k</span><span>100k</span><span>200k</span></div></div><aside><span>ESTIMATED PROVIDER ALLOWANCE</span><strong>₹{infra.toLocaleString("en-IN")}</strong><small>one-time allocation estimate</small><hr /><p>Whatsnot message markup <b>₹0</b></p><p>Additional implementation <b>Not required</b></p></aside></section></>;
+}
+
+function SettingsPage({ toast }: { toast: (title: string, body: string) => void }) {
+  const [tab, setTab] = useState("Plain-language guide");
+  const [email, setEmail] = useState(true);
+  const glossary = [{term:"Notification system",meaning:"One complete connection from a business event to a WhatsApp message."},{term:"Message journey",meaning:"The sequence of messages a customer receives as something changes."},{term:"Trigger",meaning:"The business event that starts an automatic action."},{term:"Resources",meaning:"The computing, storage and traffic allowance used to run your system."},{term:"Template",meaning:"Message wording reviewed by Meta before it can be sent proactively."},{term:"Webhook",meaning:"A secure online door where another tool reports that something happened."}];
+  return <><div className="app-page-heading"><div><span className="kicker">ACCOUNT & HELP</span><h1>Settings that make sense</h1><p>Manage preferences, connections and the words used throughout Whatsnot.</p></div></div><section className="settings-layout-new"><aside>{["Plain-language guide", "Profile", "Notifications", "Connections", "Privacy & security"].map(item => <button className={tab === item ? "active" : ""} onClick={() => setTab(item)} key={item}>{item}<span>›</span></button>)}</aside><div className="panel settings-content">{tab === "Plain-language guide" && <><div className="settings-title"><span>?</span><div><h2>Plain-language guide</h2><p>Short explanations for every term you may see in Whatsnot.</p></div></div><label className="glossary-search"><span>⌕</span><input placeholder="Search a word or concept" /></label><div className="glossary">{glossary.map(item => <details key={item.term}><summary>{item.term}<span>+</span></summary><p>{item.meaning}</p></details>)}</div></>}{tab === "Profile" && <><div className="settings-title"><span>HP</span><div><h2>Your profile</h2><p>Details used for account communication.</p></div></div><div className="settings-form"><label>Display name<input defaultValue="Harsh Prajapati" /></label><label>Work email<input defaultValue="harsh@example.com" /></label><label>Business name<input defaultValue="Harsh’s business" /></label><button className="button primary" onClick={() => toast("Profile saved", "Your profile changes were saved on this device.")}>Save changes</button></div></>}{tab === "Notifications" && <><div className="settings-title"><span>♢</span><div><h2>Notification preferences</h2><p>Choose how Whatsnot keeps you informed.</p></div></div><label className="setting-toggle"><div><strong>Setup progress emails</strong><small>Approvals, failures and go-live confirmation.</small></div><input type="checkbox" checked={email} onChange={event => setEmail(event.target.checked)} /><span /></label><label className="setting-toggle"><div><strong>Weekly delivery summary</strong><small>A plain-language report every Monday.</small></div><input type="checkbox" defaultChecked /><span /></label></>}{tab === "Connections" && <><div className="settings-title"><span>↗</span><div><h2>Connected services</h2><p>Review and revoke access from one place.</p></div></div>{["Meta WhatsApp Business", "Cloudflare", "Shopify demo"].map((item, index) => <div className="connection-row" key={item}><span>{item.slice(0, 2)}</span><div><strong>{item}</strong><small>{index < 2 ? "Connected · permission review available" : "Demo connection"}</small></div><button onClick={() => toast("Connection action", `The secure ${item} connection flow will open here.`)}>Manage</button></div>)}</>}{tab === "Privacy & security" && <><div className="settings-title"><span>🛡</span><div><h2>Privacy & security</h2><p>Control sessions and understand data protection.</p></div></div><div className="security-block"><h3>Active session</h3><p>Windows · Codex desktop · Current session</p><button className="button ghost">Sign out other sessions</button></div><div className="security-block"><h3>Customer message data</h3><p>Whatsnot should store only the minimum delivery metadata required for support and auditing. Message content persistence requires an explicit retention policy.</p></div></>}</div></section></>;
+}
+
+function NotificationsDrawer({ close }: { close: () => void }) {
+  return <div className="drawer-layer" onClick={close}><aside className="notifications-drawer" onClick={event => event.stopPropagation()}><div className="drawer-title"><div><span className="kicker">UPDATES</span><h2>Notifications</h2></div><button onClick={close}>×</button></div>{[{tone:"orange",title:"Template approval pending",body:"Meta is reviewing your order-confirmation wording.",time:"12 min ago"},{tone:"green",title:"1,248 messages delivered",body:"Your monthly delivery success is 98.7%.",time:"2 hr ago"},{tone:"blue",title:"Cost estimate approved",body:"Your one-time starter activation was recorded.",time:"Yesterday"}].map(item => <button className="drawer-item" key={item.title}><span className={item.tone} /><div><strong>{item.title}</strong><p>{item.body}</p><time>{item.time}</time></div></button>)}<button className="drawer-footer" onClick={close}>Mark all as read</button></aside></div>;
+}
+
+function CommandPalette({ navigate, close }: { navigate: (route: Route) => void; close: () => void }) {
+  const [query, setQuery] = useState("");
+  const input = useRef<HTMLInputElement>(null);
+  useEffect(() => input.current?.focus(), []);
+  const items = navItems.filter(item => `${item.label} ${item.hint}`.toLowerCase().includes(query.toLowerCase()));
+  return <div className="modal-backdrop command-layer" onClick={close}><div className="command" onClick={event => event.stopPropagation()}><label><span>⌕</span><input ref={input} value={query} onChange={event => setQuery(event.target.value)} placeholder="Find a page or action…" /><kbd>ESC</kbd></label><p>GO TO</p>{items.map(item => <button key={item.route} onClick={() => { navigate(item.route); close(); }}><span>{item.icon}</span><div><strong>{item.label}</strong><small>{item.hint}</small></div><b>↵</b></button>)}</div></div>;
 }
 
 export function WhatsnotApp() {
-  const [route, setRoute] = useState<Route>("dashboard");
-  const [online, setOnline] = useState(true);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [commandOpen, setCommandOpen] = useState(false);
-  const [notificationsOpen, setNotificationsOpen] = useState(false);
-  const [launchOpen, setLaunchOpen] = useState(false);
-  const [launchStep, setLaunchStep] = useState(1);
-  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
-  const [installed, setInstalled] = useState(false);
-  const [iosGuide, setIosGuide] = useState(false);
-  const [pushExplainer, setPushExplainer] = useState(false);
-  const [pushState, setPushState] = useState("default");
-  const [updateReady, setUpdateReady] = useState<ServiceWorker | null>(null);
-  const [queued, setQueued] = useState(0);
-  const searchRef = useRef<HTMLInputElement>(null);
-
-  const navigate = useCallback((next: Route) => {
-    setRoute(next); setSidebarOpen(false); setCommandOpen(false);
-    const path = next === "dashboard" ? "/dashboard" : `/${next}`;
-    if (window.location.pathname !== path) window.history.pushState({}, "", path);
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  }, []);
+  const [route, setRoute] = useState<Route>("home");
+  const [userName, setUserName] = useState("Harsh");
+  const [systems, setSystemsState] = useState<SystemItem[]>(defaultSystems);
+  const [notifications, setNotifications] = useState(false);
+  const [command, setCommand] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const [toasts, setToasts] = useState<Toast[]>([]);
 
   useEffect(() => {
-    queueMicrotask(() => {
-      setRoute(routeFromPath());
-      setOnline(navigator.onLine);
-      setPushState(typeof Notification !== "undefined" ? Notification.permission : "unsupported");
-      setInstalled(window.matchMedia("(display-mode: standalone)").matches || (navigator as StandaloneNavigator).standalone === true);
-    });
-    const onPop = () => setRoute(routeFromPath());
-    const onOnline = () => { setOnline(true); replaySafeActions().then(() => setQueued(0)).catch(() => undefined); };
-    const onOffline = () => setOnline(false);
-    const onInstall = (event: Event) => { event.preventDefault(); setDeferredPrompt(event as BeforeInstallPromptEvent); };
-    const onInstalled = () => { setInstalled(true); setDeferredPrompt(null); };
-    window.addEventListener("popstate", onPop); window.addEventListener("online", onOnline); window.addEventListener("offline", onOffline); window.addEventListener("beforeinstallprompt", onInstall); window.addEventListener("appinstalled", onInstalled);
-    const key = (e: KeyboardEvent) => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setCommandOpen(v => !v); } if (e.key === "Escape") { setCommandOpen(false); setNotificationsOpen(false); setIosGuide(false); setPushExplainer(false); setLaunchOpen(false); } };
+    const hydrate = window.setTimeout(() => {
+      const initialRoute = pathToRoute();
+      const signedIn = localStorage.getItem("whatsnot-auth") === "true";
+      if (appRoutes.includes(initialRoute as AppRoute) && !signedIn) {
+        window.history.replaceState({}, "", "/login");
+        setRoute("login");
+      } else {
+        setRoute(initialRoute);
+      }
+      const saved = localStorage.getItem("whatsnot-systems");
+      const savedName = localStorage.getItem("whatsnot-name");
+      if (saved) { try { setSystemsState(JSON.parse(saved) as SystemItem[]); } catch { /* ignore invalid local demo data */ } }
+      if (savedName) setUserName(savedName);
+    }, 0);
+    const pop = () => setRoute(pathToRoute());
+    const key = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); setCommand(value => !value); }
+      if (event.key === "Escape") { setCommand(false); setNotifications(false); }
+    };
+    window.addEventListener("popstate", pop);
     window.addEventListener("keydown", key);
-    const openLaunch = (e: Event) => { if ((e.target as Element).closest("[data-open-launch]")) { setLaunchOpen(true); setLaunchStep(1); } };
-    document.addEventListener("click", openLaunch);
-    if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js", { scope: "/" }).then(reg => {
-      const watch = (worker?: ServiceWorker | null) => { if (!worker) return; worker.addEventListener("statechange", () => { if (worker.state === "installed" && navigator.serviceWorker.controller) setUpdateReady(worker); }); };
-      watch(reg.installing); reg.addEventListener("updatefound", () => watch(reg.installing));
-      navigator.serviceWorker.addEventListener("controllerchange", () => window.location.reload());
-      navigator.serviceWorker.addEventListener("message", (event) => { if (event.data?.type === "SYNC_SAFE_ACTIONS") replaySafeActions().then(() => setQueued(0)).catch(() => undefined); });
-    }).catch(() => undefined);
-    return () => { window.removeEventListener("popstate", onPop); window.removeEventListener("online", onOnline); window.removeEventListener("offline", onOffline); window.removeEventListener("beforeinstallprompt", onInstall); window.removeEventListener("appinstalled", onInstalled); window.removeEventListener("keydown", key); document.removeEventListener("click", openLaunch); };
+    if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+    return () => { window.clearTimeout(hydrate); window.removeEventListener("popstate", pop); window.removeEventListener("keydown", key); };
   }, []);
 
-  const install = async () => {
-    if (deferredPrompt) { await deferredPrompt.prompt(); const result = await deferredPrompt.userChoice; if (result.outcome === "accepted") setInstalled(true); setDeferredPrompt(null); return; }
-    const ios = /iphone|ipad|ipod/i.test(navigator.userAgent); if (ios) setIosGuide(true); else alert("Use your browser menu and choose ‘Install Whatsnot’ or ‘Install app’.");
-  };
-  const enablePush = async () => { if (pushState === "granted") return; setPushExplainer(true); };
-  const requestPush = async () => { const result = await Notification.requestPermission(); setPushState(result); setPushExplainer(false); };
-  const currentLabel = nav.find(item => item.route === route)?.label ?? "Overview";
-  const content = (() => {
-    if (route === "dashboard") return <Overview onNavigate={navigate}/>;
-    if (route === "workspaces") return <Workspaces/>;
-    if (route === "deployments") return <Deployments/>;
-    if (route === "monitoring") return <Monitoring/>;
-    if (route === "logs") return <Logs offline={!online}/>;
-    if (route === "billing") return <Billing/>;
-    if (route === "team") return <Team/>;
-    if (route === "api-keys") return <ApiKeys offline={!online}/>;
-    if (route === "integrations") return <Integrations/>;
-    if (route === "settings") return <Settings onInstall={install} onPush={enablePush} installed={installed} pushState={pushState}/>;
-    return <GenericRoute route={route}/>;
-  })();
+  const navigate = (next: Route) => { window.history.pushState({}, "", routePath(next)); setRoute(next); window.scrollTo({ top: 0, behavior: "smooth" }); };
+  const setSystems = (next: SystemItem[]) => { setSystemsState(next); localStorage.setItem("whatsnot-systems", JSON.stringify(next)); };
+  const onAuth = (name: string) => { setUserName(name); localStorage.setItem("whatsnot-name", name); localStorage.setItem("whatsnot-auth", "true"); };
+  const toast = (title: string, body: string) => { const item = { id: Date.now(), title, body }; setToasts(items => [...items, item]); window.setTimeout(() => setToasts(items => items.filter(value => value.id !== item.id)), 4200); };
 
-  return <div className="app-shell">
-    <a className="skip-link" href="#main-content">Skip to content</a>
-    <aside className={`sidebar ${sidebarOpen ? "open" : ""}`} aria-label="Primary navigation"><div className="brand"><span className="brand-mark">W</span><span>Whatsnot</span><button className="mobile-close" onClick={() => setSidebarOpen(false)} aria-label="Close navigation"><Icon name="close"/></button></div><div className="org-switcher"><span className="org-avatar">NO</span><span><strong>Northstar Ops</strong><small>Pro plan</small></span><span>⌄</span></div><nav><p>Workspace</p>{nav.slice(0,6).map(item => <button key={item.route} onClick={() => navigate(item.route)} className={route === item.route ? "active" : ""} aria-current={route === item.route ? "page" : undefined}><Icon name={item.icon}/><span>{item.label}</span>{item.route === "logs" && <i className="live-dot"/>}</button>)}<p>Manage</p>{nav.slice(6).map(item => <button key={item.route} onClick={() => navigate(item.route)} className={route === item.route ? "active" : ""} aria-current={route === item.route ? "page" : undefined}><Icon name={item.icon}/><span>{item.label}</span></button>)}</nav><div className="sidebar-footer"><div className="usage"><div><span>Message usage</span><strong>61%</strong></div><progress value="61" max="100"/><small>1.84M of 3M messages</small></div><button className="support"><span>?</span><span><strong>Help & support</strong><small>Docs and contact</small></span><Icon name="chevron"/></button></div></aside>
-    {sidebarOpen && <button className="scrim" aria-label="Close navigation" onClick={() => setSidebarOpen(false)}/>} 
-    <div className="app-main"><header className="topbar"><button className="menu-button" aria-label="Open navigation" onClick={() => setSidebarOpen(true)}><span/><span/><span/></button><div className="breadcrumb"><span>Commerce production</span><Icon name="chevron" size={14}/><strong>{currentLabel}</strong></div><button className="global-search" onClick={() => setCommandOpen(true)}><Icon name="search"/><span>Search anything…</span><kbd>⌘ K</kbd></button><div className="top-actions"><button className="icon-button install-button" onClick={install} aria-label="Install Whatsnot" title="Install Whatsnot"><Icon name="download"/></button><button className="icon-button notification-button" onClick={() => setNotificationsOpen(v=>!v)} aria-label="Notifications"><Icon name="bell"/><i/></button><span className="divider"/><button className="profile-button"><span className="avatar">HK</span><span><strong>Harsh Kumar</strong><small>Owner</small></span><span>⌄</span></button></div></header>
-      {!online && <div className="offline-banner"><span>Offline</span><p>You’re viewing saved operational data. Live and destructive actions are unavailable.</p><small>Last updated 2 minutes ago</small></div>}
-      {queued > 0 && <div className="queued-banner">{queued} change queued. It will sync when you’re back online.</div>}
-      <main id="main-content">{content}</main>
-    </div>
-    {notificationsOpen && <div className="drawer notification-drawer"><div className="drawer-head"><div><h2>Notifications</h2><p>3 unread updates</p></div><button className="icon-button" onClick={() => setNotificationsOpen(false)}><Icon name="close"/></button></div>{[["Deployment completed","Commerce production is running v2.4.1","2m","success"],["Queue threshold recovered","Queue depth returned below 500","18m","info"],["Security recommendation","Enable MFA for two team members","1h","warning"]].map(n=><button className="notification-item" key={n[0]}><span className={`notification-state ${n[3]}`}/><span><strong>{n[0]}</strong><p>{n[1]}</p><time>{n[2]} ago</time></span></button>)}<button className="text-button full">Open notification center <Icon name="chevron" size={15}/></button></div>}
-    {commandOpen && <div className="modal-layer" role="presentation" onMouseDown={e => { if (e.target === e.currentTarget) setCommandOpen(false); }}><section className="command-palette" role="dialog" aria-modal="true" aria-label="Command palette"><label><Icon name="search"/><input ref={searchRef} autoFocus placeholder="Search pages and actions…"/><kbd>ESC</kbd></label><p>Navigate</p>{nav.map((item,i)=><button key={item.route} onClick={() => navigate(item.route)}><span className="command-icon"><Icon name={item.icon}/></span><span>{item.label}</span>{i<4&&<kbd>G {i+1}</kbd>}<Icon name="chevron"/></button>)}</section></div>}
-    {launchOpen && <div className="modal-layer"><section className="launch-modal" role="dialog" aria-modal="true" aria-labelledby="launch-title"><div className="modal-head"><div><span>Step {launchStep} of 4</span><h2 id="launch-title">{["Workspace details","Connect Meta","Deployment target","Ready to launch"][launchStep-1]}</h2></div>{launchStep<4&&<button className="icon-button" onClick={()=>setLaunchOpen(false)}><Icon name="close"/></button>}</div><div className="stepper">{[1,2,3,4].map(s=><span className={s<=launchStep?"active":""} key={s}>{s<launchStep?<Icon name="check" size={14}/>:s}</span>)}</div><div className="modal-body">{launchStep===1&&<><label>Workspace name<input autoFocus defaultValue="Commerce automation"/></label><label>Environment<select defaultValue="Production"><option>Production</option><option>Development</option></select></label><label>Region<select defaultValue="Singapore"><option>Singapore</option><option>Frankfurt</option><option>Virginia</option></select></label></>}{launchStep===2&&<div className="connect-box"><span className="integration-logo indigo">M</span><h3>Connect Meta WhatsApp</h3><p>Authorize access to your WhatsApp Business Account. We never store message content.</p><button className="button secondary"><Icon name="plug"/> Continue with Meta</button><Status>Demo account connected</Status></div>}{launchStep===3&&<><label>Deployment provider<select defaultValue="Railway"><option>Railway</option><option>Bring your own cloud</option></select></label><label>Worker size<select defaultValue="Standard · 2 vCPU · 4 GB"><option>Standard · 2 vCPU · 4 GB</option><option>Performance · 4 vCPU · 8 GB</option></select></label><div className="estimate"><span>Estimated monthly total</span><strong>$89–$124</strong></div></>}{launchStep===4&&<div className="launch-ready"><span><Icon name="rocket" size={32}/></span><h3>Everything looks good</h3><p>Your workspace will be prepared, built, launched, and health-checked automatically.</p><dl><div><dt>Workspace</dt><dd>Commerce automation</dd></div><div><dt>Region</dt><dd>Singapore</dd></div><div><dt>Provider</dt><dd>Railway</dd></div></dl></div>}</div><div className="modal-actions">{launchStep>1&&<button className="button secondary" onClick={()=>setLaunchStep(s=>s-1)}>Back</button>}<button className="button primary" onClick={()=>{if(launchStep<4)setLaunchStep(s=>s+1);else{setLaunchOpen(false);navigate("deployments");}}}>{launchStep===4?"Launch workspace":"Continue"}<Icon name="arrow"/></button></div></section></div>}
-    {iosGuide && <div className="modal-layer"><section className="sheet"><button className="icon-button" onClick={()=>setIosGuide(false)}><Icon name="close"/></button><span className="sheet-icon"><Icon name="download" size={28}/></span><h2>Install Whatsnot on iOS</h2><ol><li>Tap the Share button in Safari.</li><li>Scroll and choose “Add to Home Screen”.</li><li>Tap “Add” to finish.</li></ol></section></div>}
-    {pushExplainer && <div className="modal-layer"><section className="sheet"><button className="icon-button" onClick={()=>setPushExplainer(false)}><Icon name="close"/></button><span className="sheet-icon"><Icon name="bell" size={28}/></span><h2>Stay ahead of critical issues</h2><p>Whatsnot can send deployment failures, webhook incidents, and security alerts. Notifications never contain message content, tokens, or secrets.</p><div className="sheet-actions"><button className="button secondary" onClick={()=>setPushExplainer(false)}>Not now</button><button className="button primary" onClick={requestPush}>Allow notifications</button></div></section></div>}
-    {updateReady && <div className="update-toast" role="status"><span><Icon name="download"/></span><div><strong>A new version of Whatsnot is available</strong><p>Refresh to apply the latest improvements.</p></div><button onClick={()=>updateReady.postMessage({type:"SKIP_WAITING"})}>Refresh</button></div>}
-  </div>;
+  if (route === "home") return <HomePage navigate={navigate} />;
+  if (route === "learn") return <LearnPage navigate={navigate} />;
+  if (route === "login" || route === "signup") return <AuthPage mode={route} navigate={navigate} onAuth={onAuth} />;
+  if (route === "checkout") return <CheckoutPage navigate={navigate} onComplete={() => toast("Estimate approved", "Your guided setup is ready to continue.")} />;
+
+  const appRoute = route as AppRoute;
+  return <AppShell route={appRoute} navigate={navigate} userName={userName} unread={3} openNotifications={() => setNotifications(true)} openCommand={() => setCommand(true)} mobileOpen={mobileOpen} setMobileOpen={setMobileOpen}>
+    {appRoute === "dashboard" && <DashboardPage navigate={navigate} />}
+    {appRoute === "systems" && <SystemsPage systems={systems} setSystems={setSystems} navigate={navigate} toast={toast} />}
+    {appRoute === "setup" && <SetupPage systems={systems} setSystems={setSystems} navigate={navigate} toast={toast} />}
+    {appRoute === "automations" && <AutomationsPage toast={toast} />}
+    {appRoute === "activity" && <ActivityPage toast={toast} />}
+    {appRoute === "costs" && <CostsPage toast={toast} />}
+    {appRoute === "settings" && <SettingsPage toast={toast} />}
+    {notifications && <NotificationsDrawer close={() => setNotifications(false)} />}
+    {command && <CommandPalette navigate={navigate} close={() => setCommand(false)} />}
+    <div className="toast-stack" aria-live="polite">{toasts.map(item => <div className="toast" key={item.id}><span>✓</span><div><strong>{item.title}</strong><p>{item.body}</p></div><button onClick={() => setToasts(items => items.filter(value => value.id !== item.id))}>×</button></div>)}</div>
+  </AppShell>;
 }
