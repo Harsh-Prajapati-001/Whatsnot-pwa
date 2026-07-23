@@ -11,5 +11,12 @@
   },
   "images": {
     "binding": "IMAGES"
-  }
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "whatsnot-db",
+      "database_id": "4bab0554-8f8c-4948-9655-fc5648363a6e"
+    }
+  ]
 }
