@@ -1,5 +1,5 @@
 /* Whatsnot service worker: caches only the application shell and non-sensitive operational reads. */
-const VERSION = "whatsnot-v2.0.0";
+const VERSION = "whatsnot-v2.1.0";
 const SHELL = `${VERSION}-shell`;
 const RUNTIME = `${VERSION}-runtime`;
 const SAFE_ROUTES = ["/dashboard", "/systems", "/setup", "/automations", "/costs", "/settings"];
@@ -26,7 +26,7 @@ self.addEventListener("activate", (event) => {
 });
 
 function isSensitive(url) {
-  return /\/logs|\/messages|\/conversations|\/api-keys|\/environment|\/secrets|\/webhooks/i.test(url.pathname);
+  return /\/api(?:\/|$)|\/logs|\/messages|\/conversations|\/api-keys|\/environment|\/secrets|\/webhooks/i.test(url.pathname);
 }
 
 function isSafeOperationalRead(request, url) {

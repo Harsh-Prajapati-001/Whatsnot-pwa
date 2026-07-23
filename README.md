@@ -81,6 +81,56 @@ whatsnot-pwa → Settings → Domains & Routes → Add → Custom Domain**. Ente
 domain already managed by the same Cloudflare account and follow the displayed
 DNS instructions.
 
+## Enable real Google sign-in and saved account data
+
+The sign-in button stays disabled until every required Cloudflare setting is
+present. It never falls through to a fake dashboard.
+
+1. Create the database and copy the returned `database_id`:
+
+   ```bash
+   npx wrangler d1 create whatsnot-db
+   ```
+
+2. Add this top-level property to `wrangler.jsonc` (place a comma before it):
+
+   ```jsonc
+   "d1_databases": [
+     {
+       "binding": "DB",
+       "database_name": "whatsnot-db",
+       "database_id": "PASTE_THE_REAL_DATABASE_ID_HERE"
+     }
+   ]
+   ```
+
+3. Apply the included tables:
+
+   ```bash
+   npx wrangler d1 execute whatsnot-db --remote --file drizzle/0000_whatsnot_foundation.sql
+   ```
+
+4. In Google Cloud Console, create an OAuth 2.0 **Web application** client. Add
+   this exact authorized redirect URI:
+
+   ```text
+   https://whatsnot-pwa.harshprajapati0756.workers.dev/api/auth/google/callback
+   ```
+
+5. Store the three values as encrypted Worker secrets (never commit them):
+
+   ```bash
+   npx wrangler secret put GOOGLE_CLIENT_ID
+   npx wrangler secret put GOOGLE_CLIENT_SECRET
+   npx wrangler secret put SESSION_SECRET
+   ```
+
+   Use a long random value of at least 32 characters for `SESSION_SECRET`.
+
+6. Deploy again with `npm run deploy`. Google now returns to the Worker, the
+   Worker verifies the signed identity token, and the browser receives an
+   HTTP-only session cookie.
+
 ## Configuration
 
 - `wrangler.jsonc` contains the native Cloudflare Worker and static-asset
@@ -90,6 +140,6 @@ DNS instructions.
 - Local secrets belong in ignored `.env` files. Production secrets should be
   uploaded with `npx wrangler secret put SECRET_NAME` and must not be committed.
 
-The application currently does not require D1 or R2. If persistent database or
-file storage is added later, declare the corresponding bindings in
-`wrangler.jsonc` before using them in application code.
+Authenticated users, sessions, notification systems and progress are stored in
+Cloudflare D1. The checked-in configuration intentionally has no fake database
+ID; add the binding only after Cloudflare gives you the real ID.

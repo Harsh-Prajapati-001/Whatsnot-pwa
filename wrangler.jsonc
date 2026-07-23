@@ -11,12 +11,7 @@
   },
   "images": {
     "binding": "IMAGES"
-  },
-  "d1_databases": [
-    {
-      "binding": "DB",
-      "database_name": "whatsnot-db",
-      "database_id": "4bab0554-8f8c-4948-9655-fc5648363a6e"
-    }
-  ]
+  }
+  // Authentication is deliberately disabled until you create D1, then add:
+  // ,"d1_databases": [{ "binding": "DB", "database_name": "whatsnot-db", "database_id": "YOUR_REAL_D1_DATABASE_ID" }]
 }

@@ -13,14 +13,14 @@ export const metadata: Metadata = {
   manifest: "/manifest.webmanifest",
   openGraph: {
     title: "Whatsnot — Business updates, delivered automatically",
-    description: "Guided WhatsApp notification systems with transparent one-time setup costs.",
+    description: "Guided WhatsApp notification systems with transparent monthly infrastructure and one-time setup costs.",
     type: "website",
     images: [{ url: "/og.png", width: 1713, height: 911, alt: "Whatsnot business notification journey" }],
   },
   twitter: {
     card: "summary_large_image",
     title: "Whatsnot — Business updates, delivered automatically",
-    description: "Guided WhatsApp notification systems with transparent one-time setup costs.",
+    description: "Guided WhatsApp notification systems with transparent monthly infrastructure and one-time setup costs.",
     images: ["/og.png"],
   },
   icons: {

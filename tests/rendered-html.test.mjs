@@ -44,10 +44,29 @@ test("manifest contains the complete install contract", async () => {
 test("service worker never caches sensitive application data", async () => {
   const sw = await readFile(new URL("../public/sw.js", import.meta.url), "utf8");
   assert.match(sw, /isSensitive/);
+  assert.match(sw, /\\\/api\(\?:\\\/\|\$\)/);
   assert.match(sw, /logs\|\\\/messages\|\\\/conversations\|\\\/api-keys\|\\\/environment\|\\\/secrets\|\\\/webhooks/i);
   assert.match(sw, /request\.method !== "GET"/);
   assert.match(sw, /SKIP_WAITING/);
   assert.match(sw, /notificationclick/);
   assert.match(sw, /whatsnot-safe-actions/);
   assert.doesNotMatch(sw, /accessToken|apiKey|messageContent|webhookSecret/);
+});
+
+test("authentication cannot be bypassed with browser storage", async () => {
+  const app = await readFile(new URL("../app/WhatsnotApp.tsx", import.meta.url), "utf8");
+  const auth = await readFile(new URL("../worker/auth.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(app, /whatsnot-auth|whatsnot-name|Google user|GitHub user/);
+  assert.match(app, /\/api\/session/);
+  assert.match(app, /\/api\/auth\/google\/start/);
+  assert.match(auth, /HttpOnly; Secure; SameSite=Lax/);
+  assert.match(auth, /verifyGoogleIdToken/);
+  assert.match(auth, /token_hash/);
+});
+
+test("new accounts start with empty real data", async () => {
+  const app = await readFile(new URL("../app/WhatsnotApp.tsx", import.meta.url), "utf8");
+  assert.match(app, /const defaultSystems: SystemItem\[\] = \[\]/);
+  assert.doesNotMatch(app, /const defaultSystems[\s\S]{0,500}Order updates/);
+  assert.match(app, /metrics \?\? \{ delivered: 0, active: 0, attention: 0 \}/);
 });
